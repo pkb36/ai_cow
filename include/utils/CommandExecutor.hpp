@@ -5,6 +5,8 @@
 #include <optional>
 #include <chrono>
 #include <functional>
+#include <regex>  // 추가
+#include <unordered_map>
 
 class CommandExecutor {
 public:
@@ -16,7 +18,7 @@ public:
     };
 
     struct CommandConfig {
-        std::chrono::seconds timeout = std::chrono::seconds(30);
+        std::chrono::seconds timeout{30};  // {} 초기화 구문으로 변경
         size_t maxOutputSize = 8192;
         bool captureStderr = true;
         std::optional<std::string> workingDirectory;
@@ -36,14 +38,14 @@ public:
     // 명령 실행
     std::optional<CommandResult> execute(const std::string& commandName, 
                                        const std::vector<std::string>& args = {},
-                                       const CommandConfig& config = {});
+                                       const CommandConfig& config = CommandConfig{});
     
     // 비동기 실행
     using CompletionCallback = std::function<void(const CommandResult&)>;
     void executeAsync(const std::string& commandName,
                      const std::vector<std::string>& args,
                      CompletionCallback callback,
-                     const CommandConfig& config = {});
+                     const CommandConfig& config = CommandConfig{});
 
 private:
     CommandExecutor();

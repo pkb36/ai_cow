@@ -18,6 +18,7 @@
 #include <getopt.h>
 #include <fstream>
 #include <iomanip>
+#include <sys/wait.h>
 
 Application::~Application() {
     shutdown();
@@ -104,6 +105,27 @@ bool Application::initialize(int argc, char* argv[]) {
         LOG_ERROR("Exception during initialization: {}", e.what());
         return false;
     }
+}
+
+bool Application::loadConfigurations() {
+    // 설정 파일 로드
+    if (!Config::getInstance().loadConfig(configPath_)) {
+        LOG_ERROR("Failed to load config from: {}", configPath_);
+        return false;
+    }
+    
+    // 디바이스 설정 파일 경로 설정
+    const auto& webrtcConfig = Config::getInstance().getWebRTCConfig();
+    deviceSettingsPath_ = webrtcConfig.deviceSettingPath;
+    
+    // 디바이스 설정 로드
+    if (!Config::getInstance().loadDeviceSettings(deviceSettingsPath_)) {
+        LOG_WARNING("Failed to load device settings from: {}", deviceSettingsPath_);
+        // 디바이스 설정은 기본값으로 진행 가능
+    }
+    
+    LOG_INFO("Configuration loaded successfully");
+    return true;
 }
 
 bool Application::parseArguments(int argc, char* argv[]) {
@@ -381,7 +403,7 @@ void Application::stopRecordingForCamera(int cameraIndex) {
     if (it != recordingPids_.end() && it->second > 0) {
         LOG_INFO("Stopping recording for camera {}", cameraIndex);
         kill(it->second, SIGTERM);
-        waitpid(it->second, nullptr, WNOHANG);
+        ::waitpid(it->second, nullptr, WNOHANG);  // :: 접두사로 전역 함수 명시
         recordingPids_.erase(it);
     }
 }
@@ -773,26 +795,26 @@ void Application::checkAndReconnect() {
 
 // 분석 프로브 설정
 void Application::setupAnalysisProbes() {
-   const auto& config = Config::getInstance().getWebRTCConfig();
-   
-   for (int i = 0; i < config.deviceCnt; ++i) {
-       std::string osdName = "nvosd_" + std::to_string(i + 1);
-       
-       // OSD 엘리먼트가 있는 경우에만 프로브 추가
-       if (pipeline_->getElement(osdName)) {
-           pipeline_->addProbe(osdName, "sink", GST_PAD_PROBE_TYPE_BUFFER,
-               [this, i](GstPad* pad, GstPadProbeInfo* info) {
-                   return processVideoFrame(i, GST_PAD_PROBE_INFO_BUFFER(info));
-               }
-           );
-           LOG_INFO("Added analysis probe for camera {}", i);
-       }
-   }
+    const auto& config = Config::getInstance().getWebRTCConfig();
+    
+    for (int i = 0; i < config.deviceCnt; ++i) {
+        std::string osdName = "nvosd_" + std::to_string(i + 1);
+        
+        // OSD 엘리먼트가 있는 경우에만 프로브 추가
+        if (pipeline_->getElement(osdName)) {
+            pipeline_->addProbe(osdName, "sink", GST_PAD_PROBE_TYPE_BUFFER,
+                [this, i](GstPad* /*pad*/, GstPadProbeInfo* info) {  // 미사용 매개변수 주석 처리
+                    return processVideoFrame(i, GST_PAD_PROBE_INFO_BUFFER(info));
+                }
+            );
+            LOG_INFO("Added analysis probe for camera {}", i);
+        }
+    }
 }
 
 // 비디오 프레임 처리
-GstPadProbeReturn Application::processVideoFrame(int cameraIndex, GstBuffer* buffer) {
-   // 여기서 실제 비디오 분석을 수행
+GstPadProbeReturn Application::processVideoFrame(int cameraIndex, GstBuffer* /*buffer*/) {
+    // 여기서 실제 비디오 분석을 수행
     static uint64_t frameCount[2] = {0, 0};
     frameCount[cameraIndex]++;
     
@@ -840,29 +862,29 @@ std::string Application::encodeImageToBase64(const std::string& filePath) {
 
 // PTZ 초기화
 void Application::initializePtzPosition() {
-   const auto& settings = Config::getInstance().getDeviceSettings();
-   
-   // 기본 위치가 설정되어 있으면 이동
-   if (settings.ptzPresets.size() > 0 && !settings.ptzPresets[0].empty()) {
-       LOG_INFO("Moving to initial PTZ position");
-       processPtzCommand("MOVE_PRESET:0");
-   }
+    const auto& settings = Config::getInstance().getDeviceSettings();
+    
+    // 기본 위치가 설정되어 있으면 이동 (ptzPresets -> ptzPreset으로 수정)
+    if (settings.ptzPreset.size() > 0 && !settings.ptzPreset[0].empty()) {
+        LOG_INFO("Moving to initial PTZ position");
+        processPtzCommand("MOVE_PRESET:0");
+    }
 }
 
 // PTZ 명령 처리
 void Application::processPtzCommand(const std::string& command) {
-   if (!SerialPort::getInstance().isOpen()) {
-       LOG_WARNING("Cannot process PTZ command - serial port not open");
-       return;
-   }
-   
-   // 명령 파싱 및 처리
-   if (command.find("MOVE_") == 0) {
-       // 이동 명령
-       std::vector<uint8_t> ptzData;
-       // ... PTZ 프로토콜에 따른 데이터 생성
-       SerialPort::getInstance().send(ptzData);
-   }
+    if (!SerialPort::getInstance().isOpen()) {
+        LOG_WARNING("Cannot process PTZ command - serial port not open");
+        return;
+    }
+    
+    // 명령 파싱 및 처리
+    if (command.find("MOVE_") == 0) {
+        // 이동 명령
+        std::vector<uint8_t> ptzData;
+        // ... PTZ 프로토콜에 따른 데이터 생성
+        SerialPort::getInstance().send(ptzData);
+    }
 }
 
 // 디바이스 설정 적용

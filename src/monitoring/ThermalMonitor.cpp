@@ -1,4 +1,4 @@
-0#include "monitoring/ThermalMonitor.hpp"
+#include "monitoring/ThermalMonitor.hpp"
 #include "core/Logger.hpp"
 
 ThermalMonitor::ThermalMonitor() {

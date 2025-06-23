@@ -73,17 +73,16 @@ void WebSocketClient::sendBinary(const std::vector<uint8_t>& data) {
         return;
     }
     
-    GBytes* bytes = g_bytes_new(data.data(), data.size());
-    soup_websocket_connection_send_binary(impl_->connection, bytes);
-    g_bytes_unref(bytes);
+    // libsoup-2.4에서는 3개의 인자가 필요: connection, data, size
+    soup_websocket_connection_send_binary(impl_->connection, data.data(), data.size());
 }
 
-void WebSocketClient::onConnected(SoupSession* session, GAsyncResult* result, gpointer userData) {
+void WebSocketClient::onConnected(GObject* source_object, GAsyncResult* result, gpointer userData) {
     auto* client = static_cast<WebSocketClient*>(userData);
     
     GError* error = nullptr;
     client->impl_->connection = soup_session_websocket_connect_finish(
-        session, result, &error);
+        SOUP_SESSION(source_object), result, &error);
     
     if (error) {
         LOG_ERROR("WebSocket connection failed: {}", error->message);
@@ -107,7 +106,7 @@ void WebSocketClient::onConnected(SoupSession* session, GAsyncResult* result, gp
     }
 }
     
-void WebSocketClient::onMessage(SoupWebsocketConnection* conn,
+void WebSocketClient::onMessage(SoupWebsocketConnection* /*conn*/,
                                SoupWebsocketDataType type,
                                GBytes* message,
                                gpointer userData) {
@@ -124,7 +123,7 @@ void WebSocketClient::onMessage(SoupWebsocketConnection* conn,
     }
 }
 
-void WebSocketClient::onClosed(SoupWebsocketConnection* conn, gpointer userData) {
+void WebSocketClient::onClosed(SoupWebsocketConnection* /*conn*/, gpointer userData) {
     auto* client = static_cast<WebSocketClient*>(userData);
     client->impl_->connected = false;
     
