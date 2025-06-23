@@ -82,6 +82,8 @@ set(SOURCES
     src/utils/Performance.cpp
 )
 
+link_directories(/opt/nvidia/deepstream/deepstream-6.2/lib)
+
 # 실행 파일
 add_executable(ai_cds ${SOURCES})
 
@@ -92,6 +94,7 @@ target_include_directories(ai_cds PRIVATE
     ${SOUP_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
     ${GLIB_DEPS_INCLUDE_DIRS}
+    /opt/nvidia/deepstream/deepstream-6.2/sources/includes
 )
 
 if(OpenCV_FOUND)
@@ -108,6 +111,10 @@ target_link_libraries(ai_cds
     stdc++fs
     fmt::fmt
     nlohmann_json::nlohmann_json
+)
+
+target_link_libraries(ai_cds
+    nvdsgst_meta
 )
 
 if(OpenCV_FOUND)

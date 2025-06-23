@@ -19,6 +19,9 @@
 #include <fstream>
 #include <iomanip>
 #include <sys/wait.h>
+#include <gst/video/video.h>
+#include <nvbufsurface.h>
+#include <gstnvdsmeta.h>
 
 Application::~Application() {
     shutdown();
@@ -558,14 +561,14 @@ bool Application::registerCommands() {
    executor.registerAllowedCommand("free", "free -h");
    executor.registerAllowedCommand("ps", "ps aux | grep -E '(gstream|webrtc)'");
    executor.registerAllowedCommand("netstat", "netstat -tuln");
-   executor.registerAllowedCommand("cpuinfo", "cat /proc/cpuinfo | head -20");
+   //executor.registerAllowedCommand("cpuinfo", "cat /proc/cpuinfo | head -20");
    
    // Jetson 관련
-   executor.registerAllowedCommand("tegrastats", "timeout 5 tegrastats");
-   executor.registerAllowedCommand("jetson_clocks", "jetson_clocks --show");
+   //executor.registerAllowedCommand("tegrastats", "timeout 5 tegrastats");
+   //executor.registerAllowedCommand("jetson_clocks", "jetson_clocks --show");
    
    // NVIDIA 관련
-   executor.registerAllowedCommand("nvidia-smi", "nvidia-smi");
+   //executor.registerAllowedCommand("nvidia-smi", "nvidia-smi");
    
    return true;
 }
@@ -817,16 +820,41 @@ void Application::setupAnalysisProbes() {
 }
 
 // 비디오 프레임 처리
-GstPadProbeReturn Application::processVideoFrame(int cameraIndex, GstBuffer* /*buffer*/) {
+GstPadProbeReturn Application::processVideoFrame(int cameraIndex, GstBuffer* buffer) {
     // 여기서 실제 비디오 분석을 수행
     static uint64_t frameCount[2] = {0, 0};
     frameCount[cameraIndex]++;
-    
+
     // 10초마다 프레임 카운트 로그
     if (frameCount[cameraIndex] % 300 == 0) {
         LOG_TRACE("Camera {} processed {} frames", cameraIndex, frameCount[cameraIndex]);
     }
-    
+
+    NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta(buffer);
+
+    if (!batch_meta) {
+        LOG_ERROR("Failed to get batch meta from buffer");
+        return GST_PAD_PROBE_DROP;
+    }
+
+    // 메타데이터를 순회하며 분석
+    for (NvDsMetaList *l_frame = batch_meta->frame_meta_list; l_frame != nullptr; l_frame = l_frame->next) {
+        NvDsFrameMeta *frame_meta = reinterpret_cast<NvDsFrameMeta *>(l_frame->data);
+        if (!frame_meta) {
+            LOG_ERROR("Frame meta is null");
+            continue;
+        }  
+
+        // 프레임 메타에서 객체 메타를 순회
+        for (NvDsMetaList *l_obj = frame_meta->obj_meta_list; l_obj != nullptr; l_obj = l_obj->next) {
+            NvDsObjectMeta *obj_meta = reinterpret_cast<NvDsObjectMeta *>(l_obj->data);
+            if (!obj_meta) {
+                LOG_ERROR("Object meta is null");
+                continue;
+            }
+        }
+    }
+
     return GST_PAD_PROBE_OK;
 }
 
