@@ -78,6 +78,7 @@ public:
 private:
    static std::optional<RegisterMessage> parseRegister(const nlohmann::json& j);
    static std::optional<PeerJoinedMessage> parsePeerJoined(const nlohmann::json& j);
+   static std::optional<PeerLeftMessage> parsePeerLeft(const nlohmann::json& j);  // 추가
    static std::optional<AnswerMessage> parseAnswer(const nlohmann::json& j);
    static std::optional<IceCandidateMessage> parseIceCandidate(const nlohmann::json& j);
    static std::optional<CommandMessage> parseCommand(const nlohmann::json& j);

@@ -33,7 +33,11 @@ private:
     void handleAnswer(const Signaling::AnswerMessage& msg);
     void handleIceCandidate(const Signaling::IceCandidateMessage& msg);
     void handleCommand(const Signaling::CommandMessage& msg);
-    
+    void handleRegister(const Signaling::RegisterMessage& msg);
+    void handleCameraStatus(const Signaling::CameraStatusMessage& msg);
+    void handleOffer(const Signaling::OfferMessage& msg);
+
+
     // 명령 처리기
     void processPtzCommand(const std::string& peerId, const nlohmann::json& params);
     void processRecordCommand(const std::string& peerId, const nlohmann::json& params);

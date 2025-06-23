@@ -13,6 +13,8 @@ struct SerialPort::Impl {
     struct termios oldTermios;
 };
 
+SerialPort::SerialPort() = default;
+
 SerialPort::~SerialPort() {
     close();
 }
@@ -89,6 +91,10 @@ bool SerialPort::open(const Config& config) {
 
     LOG_INFO("Serial port {} opened successfully", config.portName);
     return true;
+}
+
+bool SerialPort::isOpen() const {
+    return impl_ && impl_->fd >= 0;
 }
 
 void SerialPort::close() {

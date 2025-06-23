@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <chrono>
 #include <unordered_map>
+#include <mutex>
 
 class FileWatcher {
 public:
@@ -29,6 +30,7 @@ private:
         FileChangeCallback callback;
         std::filesystem::file_time_type lastWriteTime;
         bool exists;
+        int watchDescriptor = -1;
     };
 
     void watcherThread();

@@ -10,6 +10,11 @@
 #include <gst/gst.h>
 #include "utils/Singleton.hpp"
 #include "video/EventRecorder.hpp"
+#include "network/WebSocketClient.hpp"
+#include "network/MessageHandler.hpp"
+#include "monitoring/ThermalMonitor.hpp"
+#include "utils/FileWatcher.hpp"
+#include "hardware/SerialPort.hpp"
 
 // Forward declarations
 class WebSocketClient;

@@ -83,10 +83,10 @@ set(SOURCES
 )
 
 # 실행 파일
-add_executable(webrtc_camera ${SOURCES})
+add_executable(ai_cds ${SOURCES})
 
 # 포함 디렉토리
-target_include_directories(webrtc_camera PRIVATE
+target_include_directories(ai_cds PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${GST_INCLUDE_DIRS}
     ${SOUP_INCLUDE_DIRS}
@@ -95,11 +95,11 @@ target_include_directories(webrtc_camera PRIVATE
 )
 
 if(OpenCV_FOUND)
-    target_include_directories(webrtc_camera PRIVATE ${OpenCV_INCLUDE_DIRS})
+    target_include_directories(ai_cds PRIVATE ${OpenCV_INCLUDE_DIRS})
 endif()
 
 # 링크 라이브러리
-target_link_libraries(webrtc_camera
+target_link_libraries(ai_cds
     ${GST_LIBRARIES}
     ${SOUP_LIBRARIES}
     ${GLIB_LIBRARIES}
@@ -111,24 +111,24 @@ target_link_libraries(webrtc_camera
 )
 
 if(OpenCV_FOUND)
-    target_link_libraries(webrtc_camera ${OpenCV_LIBS})
+    target_link_libraries(ai_cds ${OpenCV_LIBS})
 endif()
 
 # 컴파일 플래그
-target_compile_options(webrtc_camera PRIVATE 
+target_compile_options(ai_cds PRIVATE 
     ${GST_CFLAGS_OTHER}
     ${GLIB_DEPS_CFLAGS_OTHER}
 )
 
 # 링크 플래그
-target_link_options(webrtc_camera PRIVATE
+target_link_options(ai_cds PRIVATE
     ${GST_LDFLAGS_OTHER}
     ${GLIB_DEPS_LDFLAGS_OTHER}
 )
 
 # 설치
-install(TARGETS webrtc_camera RUNTIME DESTINATION bin)
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/ DESTINATION etc/webrtc_camera)
+install(TARGETS ai_cds RUNTIME DESTINATION bin)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/ DESTINATION etc/ai_cds)
 
 # 테스트 (선택적)
 option(BUILD_TESTS "Build tests" OFF)

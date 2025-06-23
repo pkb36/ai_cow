@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <set>  // std::set을 위해 추가
 #include "video/Pipeline.hpp"
 
 // 동적 스트림 관리

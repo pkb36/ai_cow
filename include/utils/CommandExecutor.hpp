@@ -8,23 +8,23 @@
 #include <regex>  // 추가
 #include <unordered_map>
 
+struct CommandResult {
+    int exitCode;
+    std::string output;
+    std::string error;
+    std::chrono::milliseconds executionTime;
+};
+
+struct CommandConfig {
+    std::chrono::seconds timeout{30};  // {} 초기화 구문으로 변경
+    size_t maxOutputSize = 8192;
+    bool captureStderr = true;
+    std::optional<std::string> workingDirectory;
+    std::unordered_map<std::string, std::string> environment;
+};
+
 class CommandExecutor {
 public:
-    struct CommandResult {
-        int exitCode;
-        std::string output;
-        std::string error;
-        std::chrono::milliseconds executionTime;
-    };
-
-    struct CommandConfig {
-        std::chrono::seconds timeout{30};  // {} 초기화 구문으로 변경
-        size_t maxOutputSize = 8192;
-        bool captureStderr = true;
-        std::optional<std::string> workingDirectory;
-        std::unordered_map<std::string, std::string> environment;
-    };
-
     // 싱글톤
     static CommandExecutor& getInstance() {
         static CommandExecutor instance;

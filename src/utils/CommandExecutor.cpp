@@ -4,6 +4,9 @@
 #include <array>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <unistd.h>     // pipe, fork, dup2, read, close, usleep, _exit, chdir
+#include <sys/types.h>  // pid_t
+#include <thread>       // std::thread
 
 CommandExecutor::CommandExecutor() {
     // 기본 허용 패턴 추가
@@ -28,7 +31,7 @@ void CommandExecutor::registerAllowedPattern(const std::string& pattern) {
     }
 }
 
-std::optional<CommandExecutor::CommandResult> 
+std::optional<CommandResult> 
 CommandExecutor::execute(const std::string& commandName, 
                         const std::vector<std::string>& args,
                         const CommandConfig& config) {

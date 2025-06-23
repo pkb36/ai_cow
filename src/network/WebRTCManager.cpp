@@ -114,6 +114,10 @@ bool WebRTCManager::createPeerConnection(const std::string& peerId, const std::s
     if (it == peers_.end()) {
         return false;
     }
+
+    if(source.empty()) {
+        LOG_ERROR("Source is empty for peer: {}", peerId);
+    }
     
     auto& context = it->second;
     

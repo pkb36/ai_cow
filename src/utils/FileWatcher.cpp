@@ -4,14 +4,6 @@
 #include <unistd.h>
 #include <cstring>
 
-struct FileWatcher::WatchInfo {
-    std::filesystem::path path;
-    FileChangeCallback callback;
-    std::filesystem::file_time_type lastWriteTime;
-    bool exists;
-    int watchDescriptor = -1;
-};
-
 FileWatcher::FileWatcher() = default;
 
 FileWatcher::~FileWatcher() {

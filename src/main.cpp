@@ -81,6 +81,11 @@ int main(int argc, char* argv[]) {
     try {
         // 배너 출력
         printBanner();
+
+        if (std::getenv("DISPLAY")) {
+            std::cout << "DISPLAY 환경변수 제거 중..." << std::endl;
+            unsetenv("DISPLAY");
+        }
         
         // 로거 초기화
         Logger::getInstance().setLogFile("webrtc_camera.log");

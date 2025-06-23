@@ -33,6 +33,9 @@ void MessageHandler::handleMessage(const std::string& message) {
         [this](const Signaling::AnswerMessage& msg) { handleAnswer(msg); },
         [this](const Signaling::IceCandidateMessage& msg) { handleIceCandidate(msg); },
         [this](const Signaling::CommandMessage& msg) { handleCommand(msg); },
+        [this](const Signaling::RegisterMessage& msg) { handleRegister(msg); },
+        [this](const Signaling::CameraStatusMessage& msg) { handleCameraStatus(msg); },
+        [this](const Signaling::OfferMessage& msg) { handleOffer(msg); },
         [](const auto& msg) {
             LOG_WARNING("Unhandled message type");
         }
@@ -77,6 +80,21 @@ void MessageHandler::handleCommand(const Signaling::CommandMessage& msg) {
     } else {
         LOG_WARNING("Unknown command: {}", msg.command);
     }
+}
+
+void MessageHandler::handleRegister(const Signaling::RegisterMessage& msg) {
+    LOG_INFO("Received RegisterMessage");
+}
+
+void MessageHandler::handleCameraStatus(const Signaling::CameraStatusMessage& msg)
+{
+    LOG_INFO("Received CameraStatusMessage: Record Status: {}, Record Usage: {}, CPU Temp: {}, GPU Temp: {}",
+             msg.recordStatus, msg.recordUsage, msg.cpuTemp, msg.gpuTemp);
+}
+
+void MessageHandler::handleOffer(const Signaling::OfferMessage& msg)
+{
+    LOG_INFO("Received OfferMessage from peer: {}", msg.peerId);
 }
 
 void MessageHandler::sendRegistration(const std::string& cameraId) {
@@ -139,5 +157,35 @@ void MessageHandler::processPtzCommand(const std::string& peerId,
         
     } catch (const std::exception& e) {
         LOG_ERROR("Error processing PTZ command: {}", e.what());
+    }
+}
+
+// 명령 처리 예시
+void MessageHandler::processRecordCommand(const std::string& peerId, 
+                                      const nlohmann::json& params) {
+    try {
+        std::string ptzData = params.get<std::string>();
+        LOG_INFO("Record command from {}: {}", peerId, ptzData);
+        
+        // PTZ 제어 로직
+        // SerialPort::getInstance().send(ptzData);
+        
+    } catch (const std::exception& e) {
+        LOG_ERROR("Error processing Record command: {}", e.what());
+    }
+}
+
+// 명령 처리 예시
+void MessageHandler::processCustomCommand(const std::string& peerId, 
+                                      const nlohmann::json& params) {
+    try {
+        std::string ptzData = params.get<std::string>();
+        LOG_INFO("Custom command from {}: {}", peerId, ptzData);
+        
+        // PTZ 제어 로직
+        // SerialPort::getInstance().send(ptzData);
+        
+    } catch (const std::exception& e) {
+        LOG_ERROR("Error processing Custom command: {}", e.what());
     }
 }

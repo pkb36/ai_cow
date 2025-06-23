@@ -55,13 +55,29 @@ Pipeline::~Pipeline() {
 }
 
 bool Pipeline::create(const PipelineConfig& config) {
-    LOG_INFO("Creating pipeline with {} cameras", config.cameras.size());
+    LOG_INFO("Creating pipeline with {} cameras", config.webrtcConfig.deviceCnt);
     
     impl_->config = config;
+    
+    // cameras 초기화 (config에서 deviceCnt를 기반으로)
+    impl_->config.cameras.clear();
+    for (int i = 0; i < config.webrtcConfig.deviceCnt; ++i) {
+        CameraInfo camInfo;
+        camInfo.device = static_cast<CameraDevice>(i);
+        if (i == 0) {
+            camInfo.description = "RGB Camera";
+        } else if (i == 1) {
+            camInfo.description = "Thermal Camera";
+        } else {
+            camInfo.description = "Camera " + std::to_string(i);
+        }
+        impl_->config.cameras.push_back(camInfo);
+    }
     
     // 파이프라인 문자열 생성
     std::string pipelineStr = impl_->buildPipelineString();
     LOG_DEBUG("Pipeline string length: {}", pipelineStr.length());
+    LOG_DEBUG("Pipeline string: {}", pipelineStr);
     
     // 파이프라인 생성
     GError* error = nullptr;

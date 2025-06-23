@@ -35,11 +35,17 @@ enum class StreamType : int {
 
 class Pipeline {
 public:
+    struct CameraInfo {
+        CameraDevice device;
+        std::string description;
+    };
+
     struct PipelineConfig {
         Config::WebRTCConfig webrtcConfig;
         std::string snapshotPath = "/tmp/snapshots";
         int maxStreamCount = 10;
         int basePort = 5000;
+        std::vector<CameraInfo> cameras;  // cameras 필드 추가
     };
 
     Pipeline();

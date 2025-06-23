@@ -79,6 +79,37 @@ std::string MessageParser::serialize(const Message& message) {
                 }}
             };
         },
+        [&j](const PeerJoinedMessage& msg) {
+            j["peerType"] = "client";
+            j["action"] = "peer_joined";
+            j["message"] = {
+                {"peer_id", msg.peerId},
+                {"source", msg.source}
+            };
+        },
+        [&j](const PeerLeftMessage& msg) {
+            j["peerType"] = "client";
+            j["action"] = "peer_left";
+            j["message"] = {
+                {"peer_id", msg.peerId}
+            };
+        },
+        [&j](const AnswerMessage& msg) {
+            j["peerType"] = "client";
+            j["action"] = "answer";
+            j["message"] = {
+                {"peer_id", msg.peerId},
+                {"sdp", msg.sdp}
+            };
+        },
+        [&j](const CommandMessage& msg) {
+            j["peerType"] = "controller";
+            j["action"] = "command";
+            j["message"] = {
+                {"peer_id", msg.peerId},
+                {"command", msg.command}
+            };
+        },
         [&j](const auto& msg) {
             // 기타 메시지 타입들
             j["peerType"] = "camera";
@@ -107,6 +138,81 @@ std::optional<PeerJoinedMessage> MessageParser::parsePeerJoined(const nlohmann::
         return result;
     } catch (const std::exception& e) {
         LOG_ERROR("Error parsing PeerJoined message: {}", e.what());
+        return std::nullopt;
+    }
+}
+
+std::optional<PeerLeftMessage> MessageParser::parsePeerLeft(const nlohmann::json& j)
+{
+    try {
+        if (!j.contains("message")) return std::nullopt;
+
+        auto& msg = j["message"];
+        PeerLeftMessage result;
+
+        result.peerId = msg.value("peer_id", "");
+
+        if (result.peerId.empty()) {
+            LOG_ERROR("Missing peer_id in ROOM_PEER_LEFT message");
+            return std::nullopt;
+        }
+
+        return result;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Error parsing PeerLeft message: {}", e.what());
+        return std::nullopt;
+    }
+}
+
+std::optional<AnswerMessage> MessageParser::parseAnswer(const nlohmann::json& j)
+{
+    try {
+        if (!j.contains("message")) return std::nullopt;
+
+        auto& msg = j["message"];
+        AnswerMessage result;
+
+        result.peerId = msg.value("peer_id", "");
+        result.sdp = msg.value("sdp", "");
+
+        if (result.peerId.empty() || result.sdp.empty()) {
+            LOG_ERROR("Missing peer_id or sdp in answer message");
+            return std::nullopt;
+        }
+
+        return result;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Error parsing Answer message: {}", e.what());
+        return std::nullopt;
+    }
+}
+
+std::optional<IceCandidateMessage> MessageParser::parseIceCandidate(const nlohmann::json& j)
+{
+    try {
+        if (!j.contains("message")) return std::nullopt;
+
+        auto& msg = j["message"];
+        IceCandidateMessage result;
+
+        result.peerId = msg.value("peer_id", "");
+        if (msg.contains("ice")) {
+            auto& ice = msg["ice"];
+            result.candidate = ice.value("candidate", "");
+            result.mlineIndex = ice.value("sdpMLineIndex", -1);
+        } else {
+            LOG_ERROR("Missing 'ice' field in candidate message");
+            return std::nullopt;
+        }
+
+        if (result.peerId.empty() || result.candidate.empty() || result.mlineIndex < 0) {
+            LOG_ERROR("Invalid ICE candidate message");
+            return std::nullopt;
+        }
+
+        return result;
+    } catch (const std::exception& e) {
+        LOG_ERROR("Error parsing IceCandidate message: {}", e.what());
         return std::nullopt;
     }
 }

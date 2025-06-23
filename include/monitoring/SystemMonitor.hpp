@@ -4,6 +4,7 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include <mutex>
 
 class SystemMonitor {
 public:

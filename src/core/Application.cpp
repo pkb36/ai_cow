@@ -368,6 +368,10 @@ void Application::restartRecording() {
 
 void Application::startRecordingForCamera(int cameraIndex, const std::string& filename) {
     const auto& config = Config::getInstance().getWebRTCConfig();
+
+    if(config.deviceCnt <= cameraIndex) {
+        LOG_ERROR("Invalid camera index: {} (max: {})", cameraIndex, config.deviceCnt - 1);
+    }
     
     // 이전 녹화 프로세스 종료
     stopRecordingForCamera(cameraIndex);

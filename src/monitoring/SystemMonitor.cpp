@@ -35,6 +35,12 @@ void SystemMonitor::monitoringThread() {
     }
 }
 
+void SystemMonitor::setAlertThresholds(const AlertThresholds& thresholds)
+{
+    std::lock_guard<std::mutex> lock(statusMutex_);
+    thresholds_ = thresholds;
+}
+
 void SystemMonitor::updateStatus() {
     std::lock_guard<std::mutex> lock(statusMutex_);
     

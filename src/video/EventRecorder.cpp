@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <sys/wait.h>
+#include <unistd.h>
 
 EventRecorder::~EventRecorder() {
     shutdown();

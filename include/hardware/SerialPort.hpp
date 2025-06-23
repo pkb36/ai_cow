@@ -46,7 +46,7 @@ public:
     uint8_t calculateChecksum(const std::vector<uint8_t>& data);
 
 private:
-    SerialPort() = default;
+    SerialPort();
     ~SerialPort();
 
     void readThread();
