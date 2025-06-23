@@ -10,10 +10,11 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# 컴파일 옵션
+# 컴파일 옵션 - DEBUG 매크로 충돌 방지
 add_compile_options(-Wall -Wextra -Wpedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_compile_options(-g -O0 -DDEBUG)
+    add_compile_options(-g -O0)
+    add_definitions(-DWEBRTC_DEBUG)  # DEBUG 대신 WEBRTC_DEBUG 사용
 else()
     add_compile_options(-O3)
 endif()
@@ -50,6 +51,13 @@ if(OpenCV_FOUND)
     message(STATUS "OpenCV found: ${OpenCV_VERSION}")
 endif()
 
+# GLib 의존성 추가
+pkg_check_modules(GLIB_DEPS REQUIRED 
+    glib-2.0 
+    gobject-2.0 
+    gio-2.0
+)
+
 # 소스 파일
 set(SOURCES
     src/main.cpp
@@ -83,6 +91,7 @@ target_include_directories(webrtc_camera PRIVATE
     ${GST_INCLUDE_DIRS}
     ${SOUP_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
+    ${GLIB_DEPS_INCLUDE_DIRS}
 )
 
 if(OpenCV_FOUND)
@@ -94,6 +103,7 @@ target_link_libraries(webrtc_camera
     ${GST_LIBRARIES}
     ${SOUP_LIBRARIES}
     ${GLIB_LIBRARIES}
+    ${GLIB_DEPS_LIBRARIES}
     Threads::Threads
     stdc++fs
     fmt::fmt
@@ -105,7 +115,16 @@ if(OpenCV_FOUND)
 endif()
 
 # 컴파일 플래그
-target_compile_options(webrtc_camera PRIVATE ${GST_CFLAGS_OTHER})
+target_compile_options(webrtc_camera PRIVATE 
+    ${GST_CFLAGS_OTHER}
+    ${GLIB_DEPS_CFLAGS_OTHER}
+)
+
+# 링크 플래그
+target_link_options(webrtc_camera PRIVATE
+    ${GST_LDFLAGS_OTHER}
+    ${GLIB_DEPS_LDFLAGS_OTHER}
+)
 
 # 설치
 install(TARGETS webrtc_camera RUNTIME DESTINATION bin)
@@ -123,5 +142,5 @@ set(CPACK_PACKAGE_NAME "WebRTCCamera")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_GENERATOR "DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Your Name")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, libfmt-dev, nlohmann-json3-dev")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, libfmt-dev, nlohmann-json3-dev, libsoup2.4-dev")
 include(CPack)

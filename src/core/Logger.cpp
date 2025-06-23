@@ -35,7 +35,7 @@ void Logger::writeLog(LogLevel level, const std::string& message) {
         case LogLevel::TRACE:
             std::cout << "\033[90m" << logLine << "\033[0m";  // Dark gray
             break;
-        case LogLevel::DEBUG:
+        case LogLevel::DEBUG_LEVEL:
             std::cout << "\033[36m" << logLine << "\033[0m";  // Cyan
             break;
         case LogLevel::INFO:
@@ -75,12 +75,12 @@ std::string Logger::getCurrentTimestamp() const {
 
 const char* Logger::levelToString(LogLevel level) const {
     switch (level) {
-        case LogLevel::TRACE:    return "TRACE";
-        case LogLevel::DEBUG:    return "DEBUG";
-        case LogLevel::INFO:     return "INFO ";
-        case LogLevel::WARNING:  return "WARN ";
-        case LogLevel::ERROR:    return "ERROR";
-        case LogLevel::CRITICAL: return "CRIT ";
-        default:                 return "UNKN ";
+        case LogLevel::TRACE:       return "TRACE";
+        case LogLevel::DEBUG_LEVEL: return "DEBUG";
+        case LogLevel::INFO:        return "INFO ";
+        case LogLevel::WARNING:     return "WARN ";
+        case LogLevel::ERROR:       return "ERROR";
+        case LogLevel::CRITICAL:    return "CRIT ";
+        default:                    return "UNKN ";
     }
 }

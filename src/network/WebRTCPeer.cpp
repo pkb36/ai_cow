@@ -113,9 +113,10 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
         return false;
     }
     
-    // WebRTC에 연결
+    // WebRTC에 연결 (호환성을 위한 수정)
     GstPad* srcPad = gst_element_get_static_pad(rtpPay, "src");
-    GstPad* sinkPad = gst_element_request_pad_simple(impl_->webrtcbin, "sink_%u");
+    GstPadTemplate* template_ = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(impl_->webrtcbin), "sink_%u");
+    GstPad* sinkPad = gst_element_request_pad(impl_->webrtcbin, template_, nullptr, nullptr);
     
     if (gst_pad_link(srcPad, sinkPad) != GST_PAD_LINK_OK) {
         LOG_ERROR("Failed to link RTP to WebRTC");
@@ -254,6 +255,7 @@ void WebRTCPeer::setState(State newState) {
 
 // 콜백 구현들
 void WebRTCPeer::Impl::onNegotiationNeeded(GstElement* element, gpointer userData) {
+    (void)element; // 미사용 매개변수 경고 제거
     auto* peer = static_cast<WebRTCPeer*>(userData);
     LOG_DEBUG("Negotiation needed for peer: {}", peer->config_.peerId);
     
@@ -262,11 +264,22 @@ void WebRTCPeer::Impl::onNegotiationNeeded(GstElement* element, gpointer userDat
 
 void WebRTCPeer::Impl::onIceCandidate(GstElement* element, guint mlineIndex, 
                                       gchar* candidate, gpointer userData) {
+    (void)element; // 미사용 매개변수 경고 제거
     auto* peer = static_cast<WebRTCPeer*>(userData);
     
     if (peer->iceCandidateCallback_) {
         peer->iceCandidateCallback_(std::string(candidate), static_cast<int>(mlineIndex));
     }
+}
+
+void WebRTCPeer::Impl::onIceGatheringState(GstElement* element, GParamSpec* pspec, gpointer userData) {
+    (void)element; (void)pspec; (void)userData; // 미사용 매개변수 경고 제거
+    // ICE 수집 상태 변경 처리 (필요시 구현)
+}
+
+void WebRTCPeer::Impl::onConnectionState(GstElement* element, GParamSpec* pspec, gpointer userData) {
+    (void)element; (void)pspec; (void)userData; // 미사용 매개변수 경고 제거
+    // 연결 상태 변경 처리 (필요시 구현)
 }
 
 void WebRTCPeer::Impl::onOfferCreated(GstPromise* promise, gpointer userData) {
@@ -301,6 +314,37 @@ void WebRTCPeer::Impl::onOfferCreated(GstPromise* promise, gpointer userData) {
     gst_webrtc_session_description_free(offer);
 }
 
+void WebRTCPeer::Impl::onAnswerCreated(GstPromise* promise, gpointer userData) {
+    auto* peer = static_cast<WebRTCPeer*>(userData);
+    
+    const GstStructure* reply = gst_promise_get_reply(promise);
+    GstWebRTCSessionDescription* answer = nullptr;
+    gst_structure_get(reply, "answer", GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &answer, nullptr);
+    
+    if (!answer) {
+        LOG_ERROR("Failed to create answer");
+        if (peer->errorCallback_) {
+            peer->errorCallback_("Failed to create answer");
+        }
+        return;
+    }
+    
+    // Local description 설정
+    GstPromise* setPromise = gst_promise_new();
+    g_signal_emit_by_name(peer->impl_->webrtcbin, "set-local-description", answer, setPromise);
+    gst_promise_interrupt(setPromise);
+    gst_promise_unref(setPromise);
+    
+    // SDP 문자열로 변환
+    gchar* sdpStr = gst_sdp_message_as_text(answer->sdp);
+    
+    // Answer는 자동으로 전송하지 않고 콜백만 호출
+    LOG_DEBUG("Answer created for peer: {}", peer->config_.peerId);
+    
+    g_free(sdpStr);
+    gst_webrtc_session_description_free(answer);
+}
+
 // 통계 정보 가져오기
 WebRTCPeer::Statistics WebRTCPeer::getStatistics() const {
     Statistics stats;
@@ -313,11 +357,14 @@ WebRTCPeer::Statistics WebRTCPeer::getStatistics() const {
     GstPromise* promise = gst_promise_new();
     g_signal_emit_by_name(impl_->webrtcbin, "get-stats", nullptr, promise);
     
-    const GstStructure* reply = gst_promise_wait(promise);
-    if (reply) {
-        // 통계 파싱 (실제 구현은 WebRTC 통계 구조에 따라 다름)
-        // 여기서는 예시로 간단히 구현
-        LOG_TRACE("Stats structure: {}", gst_structure_to_string(reply));
+    GstPromiseResult result = gst_promise_wait(promise);
+    if (result == GST_PROMISE_RESULT_REPLIED) {
+        const GstStructure* reply = gst_promise_get_reply(promise);
+        if (reply) {
+            // 통계 파싱 (실제 구현은 WebRTC 통계 구조에 따라 다름)
+            // 여기서는 예시로 간단히 구현
+            LOG_TRACE("Stats structure: {}", gst_structure_to_string(reply));
+        }
     }
     
     gst_promise_unref(promise);

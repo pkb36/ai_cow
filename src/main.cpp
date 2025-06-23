@@ -84,38 +84,38 @@ int main(int argc, char* argv[]) {
         
         // 로거 초기화
         Logger::getInstance().setLogFile("webrtc_camera.log");
-        Logger::getInstance().setLogLevel(LogLevel::DEBUG);
+        Logger::getInstance().setLogLevel(LogLevel::DEBUG_LEVEL);
         
         LOG_INFO("========================================");
         LOG_INFO("WebRTC Camera System Starting...");
-       LOG_INFO("Version: 2.0.0");
-       LOG_INFO("Build: {} {}", __DATE__, __TIME__);
-       LOG_INFO("========================================");
+        LOG_INFO("Version: 2.0.0");
+        LOG_INFO("Build: {} {}", __DATE__, __TIME__);
+        LOG_INFO("========================================");
 
-       // 시그널 핸들러 설정
-       setupSignalHandlers();
+        // 시그널 핸들러 설정
+        setupSignalHandlers();
 
-       // 애플리케이션 초기화 및 실행
-       auto& app = Application::getInstance();
-       
-       if (!app.initialize(argc, argv)) {
-           LOG_ERROR("Failed to initialize application");
-           return EXIT_FAILURE;
-       }
+        // 애플리케이션 초기화 및 실행
+        auto& app = Application::getInstance();
+        
+        if (!app.initialize(argc, argv)) {
+            LOG_ERROR("Failed to initialize application");
+            return EXIT_FAILURE;
+        }
 
-       // 메인 루프 실행
-       app.run();
-       
-       LOG_INFO("Application terminated normally");
-       return EXIT_SUCCESS;
-       
-   } catch (const std::exception& e) {
-       LOG_CRITICAL("Unhandled exception: {}", e.what());
-       std::cerr << "Fatal error: " << e.what() << std::endl;
-       return EXIT_FAILURE;
-   } catch (...) {
-       LOG_CRITICAL("Unknown exception caught");
-       std::cerr << "Fatal error: Unknown exception" << std::endl;
-       return EXIT_FAILURE;
-   }
+        // 메인 루프 실행
+        app.run();
+        
+        LOG_INFO("Application terminated normally");
+        return EXIT_SUCCESS;
+        
+    } catch (const std::exception& e) {
+        LOG_CRITICAL("Unhandled exception: {}", e.what());
+        std::cerr << "Fatal error: " << e.what() << std::endl;
+        return EXIT_FAILURE;
+    } catch (...) {
+        LOG_CRITICAL("Unknown exception caught");
+        std::cerr << "Fatal error: Unknown exception" << std::endl;
+        return EXIT_FAILURE;
+    }
 }

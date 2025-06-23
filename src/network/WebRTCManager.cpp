@@ -1,6 +1,5 @@
 #include "network/WebRTCManager.hpp"
 #include "core/Logger.hpp"
-#include <nlohmann/json.hpp>
 
 WebRTCManager::WebRTCManager(std::shared_ptr<Pipeline> pipeline)
     : pipeline_(pipeline) {
@@ -89,6 +88,67 @@ bool WebRTCManager::removePeer(const std::string& peerId) {
     return true;
 }
 
+void WebRTCManager::removeAllPeers() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    LOG_INFO("Removing all {} peers", peers_.size());
+    
+    for (auto& [peerId, context] : peers_) {
+        if (context->peer) {
+            context->peer->disconnect();
+        }
+        pipeline_->removeStream(peerId);
+        
+        if (context->udpSrc) {
+            gst_element_set_state(context->udpSrc, GST_STATE_NULL);
+            gst_object_unref(context->udpSrc);
+        }
+    }
+    
+    peers_.clear();
+}
+
+bool WebRTCManager::createPeerConnection(const std::string& peerId, const std::string& source) {
+    // UDP 소스 생성 (파이프라인의 UDP 싱크에서 스트림 받기)
+    auto it = peers_.find(peerId);
+    if (it == peers_.end()) {
+        return false;
+    }
+    
+    auto& context = it->second;
+    
+    // 스트림 포트 계산 (Pipeline의 포트 할당 로직과 일치해야 함)
+    int basePort = 5000;
+    int deviceIndex = static_cast<int>(context->info.device);
+    int streamTypeIndex = static_cast<int>(context->info.streamType);
+    
+    // 간단한 포트 할당 (실제로는 Pipeline에서 동적으로 할당받아야 함)
+    context->streamPort = basePort + deviceIndex * 2 + streamTypeIndex;
+    
+    // UDP 소스 생성
+    context->udpSrc = gst_element_factory_make("udpsrc", nullptr);
+    if (!context->udpSrc) {
+        LOG_ERROR("Failed to create UDP source");
+        return false;
+    }
+    
+    // UDP 소스 설정
+    g_object_set(context->udpSrc, 
+                 "port", context->streamPort,
+                 "caps", gst_caps_from_string("application/x-rtp"),
+                 nullptr);
+    
+    // WebRTC peer에 스트림 연결
+    if (!context->peer->connectToStream(context->udpSrc)) {
+        LOG_ERROR("Failed to connect stream to WebRTC peer");
+        gst_object_unref(context->udpSrc);
+        context->udpSrc = nullptr;
+        return false;
+    }
+    
+    return true;
+}
+
 bool WebRTCManager::handleAnswer(const std::string& peerId, const std::string& sdp) {
     std::lock_guard<std::mutex> lock(mutex_);
     
@@ -160,15 +220,13 @@ void WebRTCManager::onIceCandidate(const std::string& peerId,
     
     if (messageCallback_) {
         // JSON 형식으로 메시지 생성
-        Json::Value root;
+        nlohmann::json root;
         root["peerId"] = peerId;
         root["type"] = "candidate";
         root["candidate"] = candidate;
         root["mlineIndex"] = mlineIndex;
         
-        Json::StreamWriterBuilder builder;
-        std::string jsonStr = Json::writeString(builder, root);
-        
+        std::string jsonStr = root.dump();
         messageCallback_(peerId, "candidate", jsonStr);
     }
 }
@@ -177,16 +235,35 @@ void WebRTCManager::onOfferCreated(const std::string& peerId, const std::string&
     LOG_DEBUG("Offer created for peer: {}", peerId);
     
     if (messageCallback_) {
-        Json::Value root;
+        nlohmann::json root;
         root["peerId"] = peerId;
         root["type"] = "offer";
         root["sdp"] = sdp;
         
-        Json::StreamWriterBuilder builder;
-        std::string jsonStr = Json::writeString(builder, root);
-        
+        std::string jsonStr = root.dump();
         messageCallback_(peerId, "offer", jsonStr);
     }
+}
+
+void WebRTCManager::onStateChange(const std::string& peerId, 
+                                  WebRTCPeer::State oldState, 
+                                  WebRTCPeer::State newState) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    auto it = peers_.find(peerId);
+    if (it != peers_.end()) {
+        it->second->info.state = newState;
+    }
+    
+    LOG_INFO("Peer {} state changed: {} -> {}", 
+             peerId, static_cast<int>(oldState), static_cast<int>(newState));
+}
+
+void WebRTCManager::onError(const std::string& peerId, const std::string& error) {
+    LOG_ERROR("WebRTC error for peer {}: {}", peerId, error);
+    
+    // 에러 발생 시 해당 peer 제거
+    removePeer(peerId);
 }
 
 CameraDevice WebRTCManager::parseSource(const std::string& source) const {
@@ -198,6 +275,35 @@ CameraDevice WebRTCManager::parseSource(const std::string& source) const {
     
     // 기본값
     return CameraDevice::RGB;
+}
+
+std::optional<WebRTCManager::PeerInfo> WebRTCManager::getPeerInfo(const std::string& peerId) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    auto it = peers_.find(peerId);
+    if (it != peers_.end()) {
+        return it->second->info;
+    }
+    
+    return std::nullopt;
+}
+
+std::vector<WebRTCManager::PeerInfo> WebRTCManager::getAllPeers() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    std::vector<PeerInfo> result;
+    result.reserve(peers_.size());
+    
+    for (const auto& [peerId, context] : peers_) {
+        result.push_back(context->info);
+    }
+    
+    return result;
+}
+
+size_t WebRTCManager::getPeerCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return peers_.size();
 }
 
 // 통계 정보 수집

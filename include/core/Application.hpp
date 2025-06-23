@@ -3,8 +3,11 @@
 #include <memory>
 #include <atomic>
 #include <thread>
-#include <glib.h>
+#include <unordered_map>
 #include <filesystem>
+#include <functional>
+#include <glib.h>
+#include <gst/gst.h>
 #include "utils/Singleton.hpp"
 #include "video/EventRecorder.hpp"
 
@@ -20,6 +23,55 @@ class SystemMonitor;
 class FileWatcher;
 class CommandExecutor;
 class Config;
+
+// 간단한 Timer 클래스 (Timer.hpp가 없는 경우)
+class Timer {
+public:
+    using Callback = std::function<void()>;
+    
+    Timer() = default;
+    ~Timer() { stop(); }
+    
+    void setTimeout(Callback callback, std::chrono::milliseconds delay) {
+        stop();
+        running_ = true;
+        
+        thread_ = std::thread([this, callback, delay]() {
+            std::this_thread::sleep_for(delay);
+            if (running_) {
+                callback();
+                running_ = false;
+            }
+        });
+    }
+    
+    void setInterval(Callback callback, std::chrono::milliseconds interval) {
+        stop();
+        running_ = true;
+        
+        thread_ = std::thread([this, callback, interval]() {
+            while (running_) {
+                std::this_thread::sleep_for(interval);
+                if (running_) {
+                    callback();
+                }
+            }
+        });
+    }
+    
+    void stop() {
+        running_ = false;
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+    
+    bool isRunning() const { return running_; }
+    
+private:
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+};
 
 class Application {
 public:
@@ -97,6 +149,12 @@ private:
     void setState(State newState);
     void handleError(const std::string& error);
 
+    // 비디오 처리
+    void setupAnalysisProbes();
+    GstPadProbeReturn processVideoFrame(int cameraIndex, GstBuffer* buffer);
+    std::string encodeImageToBase64(const std::string& filePath);
+    void applyDeviceSettings();
+
     // 멤버 변수들
     std::atomic<State> state_{State::UNKNOWN};
     std::atomic<bool> running_{false};
@@ -124,6 +182,12 @@ private:
     // 재연결 관리
     std::atomic<int> reconnectAttempts_{0};
     std::chrono::steady_clock::time_point lastReconnectTime_;
+    
+    // 타이머 관련 멤버 추가
+    std::unique_ptr<Timer> recordingTimer_;
+    std::unique_ptr<Timer> midnightTimer_;
+    std::unique_ptr<Timer> restartTimer_;
+    std::unordered_map<int, pid_t> recordingPids_;
     
     // 통계
     struct Statistics {

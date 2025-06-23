@@ -8,9 +8,14 @@
 #include <chrono>
 #include <fmt/format.h>
 
+// DEBUG 매크로 충돌 방지
+#ifdef DEBUG
+#undef DEBUG
+#endif
+
 enum class LogLevel {
     TRACE = 0,
-    DEBUG,
+    DEBUG_LEVEL,  // DEBUG 대신 DEBUG_LEVEL 사용
     INFO,
     WARNING,
     ERROR,
@@ -55,15 +60,15 @@ private:
 
 // 전역 로거 매크로
 #define LOG_TRACE(...) Logger::getInstance().log(LogLevel::TRACE, __VA_ARGS__)
-#define LOG_DEBUG(...) Logger::getInstance().log(LogLevel::DEBUG, __VA_ARGS__)
+#define LOG_DEBUG(...) Logger::getInstance().log(LogLevel::DEBUG_LEVEL, __VA_ARGS__)
 #define LOG_INFO(...) Logger::getInstance().log(LogLevel::INFO, __VA_ARGS__)
 #define LOG_WARNING(...) Logger::getInstance().log(LogLevel::WARNING, __VA_ARGS__)
 #define LOG_ERROR(...) Logger::getInstance().log(LogLevel::ERROR, __VA_ARGS__)
 #define LOG_CRITICAL(...) Logger::getInstance().log(LogLevel::CRITICAL, __VA_ARGS__)
 
 // LOG_LEVEL_DEBUG 정의 (SerialPort.cpp에서 사용)
-#ifdef DEBUG
-#define LOG_LEVEL_DEBUG 1
-#else
+#ifdef NDEBUG
 #define LOG_LEVEL_DEBUG 0
+#else
+#define LOG_LEVEL_DEBUG 1
 #endif

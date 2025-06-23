@@ -124,7 +124,7 @@ bool Application::parseArguments(int argc, char* argv[]) {
             case 'l': {
                 std::string level = optarg;
                 if (level == "trace") Logger::getInstance().setLogLevel(LogLevel::TRACE);
-                else if (level == "debug") Logger::getInstance().setLogLevel(LogLevel::DEBUG);
+                else if (level == "debug") Logger::getInstance().setLogLevel(LogLevel::DEBUG_LEVEL);
                 else if (level == "info") Logger::getInstance().setLogLevel(LogLevel::INFO);
                 else if (level == "warning") Logger::getInstance().setLogLevel(LogLevel::WARNING);
                 else if (level == "error") Logger::getInstance().setLogLevel(LogLevel::ERROR);
@@ -793,19 +793,15 @@ void Application::setupAnalysisProbes() {
 // 비디오 프레임 처리
 GstPadProbeReturn Application::processVideoFrame(int cameraIndex, GstBuffer* buffer) {
    // 여기서 실제 비디오 분석을 수행
-   // - 객체 검출 결과 처리
-   // - 열화상 카메라의 경우 온도 분석
-   // - 이벤트 감지 등
-   
-   static uint64_t frameCount[2] = {0, 0};
-   frameCount[cameraIndex]++;
-   
-   // 10초마다 프레임 카운트 로그
-   if (frameCount[cameraIndex] % 300 == 0) {
-       LOG_TRACE("Camera {} processed {} frames", cameraIndex, frameCount[cameraIndex]);
-   }
-   
-   return GST_PAD_PROBE_OK;
+    static uint64_t frameCount[2] = {0, 0};
+    frameCount[cameraIndex]++;
+    
+    // 10초마다 프레임 카운트 로그
+    if (frameCount[cameraIndex] % 300 == 0) {
+        LOG_TRACE("Camera {} processed {} frames", cameraIndex, frameCount[cameraIndex]);
+    }
+    
+    return GST_PAD_PROBE_OK;
 }
 
 // 이미지를 Base64로 인코딩

@@ -8,6 +8,9 @@
 #include <condition_variable>
 #include <thread>
 #include <atomic>
+#include <functional>
+#include <unordered_map>
+#include <vector>
 
 enum class EventType {
     HEAT = 1,

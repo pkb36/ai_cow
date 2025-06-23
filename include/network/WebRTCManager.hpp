@@ -4,7 +4,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <functional>
-#include <json/json.h>
+#include <nlohmann/json.hpp>  // json/json.h 대신 nlohmann/json.hpp 사용
 #include "network/WebRTCPeer.hpp"
 #include "video/Pipeline.hpp"
 
