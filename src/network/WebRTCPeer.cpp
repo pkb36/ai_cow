@@ -67,14 +67,11 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
     }
     
     // 파이프라인 생성
-    std::string pipelineStr = fmt::format(
-        "webrtcbin name=webrtc bundle-policy=max-bundle "
-        "stun-server={} ",
-        config_.stunServer
-    );
+    std::string pipelineStr = "webrtcbin name=webrtc bundle-policy=max-bundle "
+                             "stun-server=" + config_.stunServer + " ";
     
     if (config_.useTurn && !config_.turnServer.empty()) {
-        pipelineStr += fmt::format("turn-server={} ", config_.turnServer);
+        pipelineStr += "turn-server=" + config_.turnServer + " ";
     }
     
     GError* error = nullptr;

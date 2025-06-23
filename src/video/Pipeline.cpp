@@ -4,6 +4,7 @@
 #include <gst/gstpad.h>
 #include <gst/gstbus.h>
 #include <algorithm>
+#include <atomic>
 
 struct Pipeline::Impl {
     GstPtr<GstElement> pipeline;
@@ -213,60 +214,54 @@ GstElement* Pipeline::getElement(const std::string& name) {
     return nullptr;
 }
 
-// 파이프라인 문자열 빌드
+// Pipeline::Impl::buildPipelineString() 메서드만 수정
 std::string Pipeline::Impl::buildPipelineString() {
+    const auto& webrtcConfig = config.webrtcConfig;
     std::stringstream ss;
     
-    for (size_t i = 0; i < config.cameras.size(); ++i) {
-        const auto& cam = config.cameras[i];
+    // 각 비디오 소스에 대한 파이프라인 구성
+    for (int i = 0; i < webrtcConfig.deviceCnt && i < 2; ++i) {
+        const auto& video = webrtcConfig.video[i];
         
-        // 카메라별 파이프라인 구성
-        // 소스
-        ss << cam.source << " ";
+        // 1. 비디오 소스
+        ss << video.src << " ";
         
-        // 스냅샷 브랜치
-        ss << "! tee name=tee_snapshot_" << i << " ";
-        ss << "tee_snapshot_" << i << ". ! queue ! " << cam.snapshotEncoder 
-           << " location=" << config.snapshotPath << "/cam" << i << "_snapshot.jpg ";
+        // 2. 녹화 브랜치 (UDP로 출력)
+        ss << video.record << " ";
         
-        // 메인 처리 브랜치
-        ss << "tee_snapshot_" << i << ". ! queue ";
-        
-        // 녹화 인코더
-        if (!cam.recordEncoder.empty()) {
-            ss << cam.recordEncoder << " ";
+        // 3. 추론 브랜치
+        if (!video.infer.empty()) {
+            ss << video.infer << " ";
         }
         
-        // 추론 설정
-        if (!cam.inferConfig.empty()) {
-            ss << cam.inferConfig << " ";
-            ss << "! nvosd name=nvosd_" << (i + 1) << " ";
-        }
+        // 4. 메인 인코더 브랜치를 위한 tee
+        ss << "tee name=enc_tee_" << i << " ";
         
-        // 메인 인코더 브랜치
-        ss << "! tee name=pre_enc_tee_" << i << " ";
+        // 5. 메인 인코더 (고품질)
+        ss << "enc_tee_" << i << ". ! queue ! " << video.enc;
+        ss << "tee name=stream_tee1_" << i << " ";
         
-        // 첫 번째 인코더 (메인 스트림)
-        ss << "pre_enc_tee_" << i << ". ! queue " << cam.encoder 
-           << " ! tee name=video_enc_tee1_" << i << " ";
+        // 6. 서브 인코더 (저품질)
+        ss << video.enc2;
+        ss << "tee name=stream_tee2_" << i << " ";
         
-        // 두 번째 인코더 (서브 스트림)
-        ss << "pre_enc_tee_" << i << ". ! queue " << cam.encoder2 
-           << " ! tee name=video_enc_tee2_" << i << " ";
+        // 7. 스냅샷 브랜치
+        ss << video.snapshot;
+        ss << "location=" << webrtcConfig.snapshotPath << "/cam" << i << "_snapshot.jpg ";
     }
     
-    // UDP 싱크 추가
-    for (size_t streamIdx = 0; streamIdx < config.maxStreamCount + 2; ++streamIdx) {
-        for (size_t camIdx = 0; camIdx < config.cameras.size(); ++camIdx) {
+    // UDP 싱크 추가 (WebRTC 스트리밍용)
+    for (int streamIdx = 0; streamIdx < config.maxStreamCount; ++streamIdx) {
+        for (int camIdx = 0; camIdx < webrtcConfig.deviceCnt && camIdx < 2; ++camIdx) {
             // 메인 스트림
             int port = config.basePort + (streamIdx * 100) + (camIdx * 2);
-            ss << "video_enc_tee1_" << camIdx << ". ! queue ! rtph264pay config-interval=-1 ! "
+            ss << "stream_tee1_" << camIdx << ". ! queue ! "
                << "udpsink host=127.0.0.1 port=" << port 
                << " sync=false async=false name=udpsink_" << camIdx << "_0_" << streamIdx << " ";
             
             // 서브 스트림
             port++;
-            ss << "video_enc_tee2_" << camIdx << ". ! queue ! rtph264pay config-interval=-1 ! "
+            ss << "stream_tee2_" << camIdx << ". ! queue ! "
                << "udpsink host=127.0.0.1 port=" << port 
                << " sync=false async=false name=udpsink_" << camIdx << "_1_" << streamIdx << " ";
         }

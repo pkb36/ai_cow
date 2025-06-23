@@ -6,6 +6,7 @@
 #include <glib.h>
 #include <filesystem>
 #include "utils/Singleton.hpp"
+#include "video/EventRecorder.hpp"
 
 // Forward declarations
 class WebSocketClient;
@@ -67,6 +68,10 @@ private:
     bool setupWebSocket();
     bool setupMonitoring();
     bool registerCommands();
+    void restartRecording();
+    void startRecordingForCamera(int cameraIndex, const std::string& filename);
+    void stopRecordingForCamera(int cameraIndex);
+    void scheduleNextMidnightRestart();
 
     // 이벤트 핸들러
     void onWebSocketConnected();

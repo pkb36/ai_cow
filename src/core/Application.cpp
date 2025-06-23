@@ -244,50 +244,146 @@ bool Application::initializeHardware() {
 }
 
 bool Application::createPipeline() {
-   LOG_INFO("Creating pipeline...");
-   
-   const auto& config = Config::getInstance().getWebRTCConfig();
-   
-   Pipeline::PipelineConfig pipelineConfig;
-   pipelineConfig.snapshotPath = config.snapshotPath;
-   pipelineConfig.maxStreamCount = config.maxStreamCount;
-   pipelineConfig.basePort = config.streamBasePort;
-   pipelineConfig.codecName = config.codecName;
-   
-   // 카메라 설정 변환
-   for (int i = 0; i < config.deviceCnt; ++i) {
-       Pipeline::CameraConfig camConfig;
-       camConfig.source = config.videoSrc[i];
-       camConfig.encoder = config.videoEnc[i];
-       camConfig.encoder2 = config.videoEnc2[i];
-       camConfig.inferConfig = config.videoInfer[i];
-       camConfig.recordEncoder = config.recordEnc[i];
-       camConfig.snapshotEncoder = config.snapshotEnc[i];
-       camConfig.deviceIndex = i;
-       
-       pipelineConfig.cameras.push_back(camConfig);
-   }
-   
-   // 스냅샷 디렉토리 생성
-   std::filesystem::create_directories(config.snapshotPath);
-   
-   pipeline_ = std::make_shared<Pipeline>();
-   if (!pipeline_->create(pipelineConfig)) {
-       LOG_ERROR("Failed to create pipeline");
-       return false;
-   }
-   
-   // 비디오 분석 프로브 설정
-   setupAnalysisProbes();
-   
-   // 파이프라인 시작
-   if (!pipeline_->start()) {
-       LOG_ERROR("Failed to start pipeline");
-       return false;
-   }
-   
-   LOG_INFO("Pipeline started successfully");
-   return true;
+    LOG_INFO("Creating pipeline...");
+    
+    const auto& config = Config::getInstance().getWebRTCConfig();
+    
+    Pipeline::PipelineConfig pipelineConfig;
+    pipelineConfig.snapshotPath = config.snapshotPath;
+    pipelineConfig.maxStreamCount = config.maxStreamCount;
+    pipelineConfig.basePort = config.streamBasePort;
+    pipelineConfig.webrtcConfig = config;  // 전체 config 전달
+    
+    // 스냅샷 디렉토리 생성
+    std::filesystem::create_directories(config.snapshotPath);
+    
+    pipeline_ = std::make_shared<Pipeline>();
+    if (!pipeline_->create(pipelineConfig)) {
+        LOG_ERROR("Failed to create pipeline");
+        return false;
+    }
+    
+    // 비디오 분석 프로브 설정
+    setupAnalysisProbes();
+    
+    // 파이프라인 시작
+    if (!pipeline_->start()) {
+        LOG_ERROR("Failed to start pipeline");
+        return false;
+    }
+    
+    // 5분마다 녹화 재시작을 위한 타이머 설정
+    recordingTimer_ = std::make_unique<Timer>();
+    recordingTimer_->setInterval([this]() {
+        restartRecording();
+    }, std::chrono::minutes(5));
+    
+    // 자정 재시작 스케줄러 설정
+    scheduleNextMidnightRestart();
+    
+    LOG_INFO("Pipeline started successfully");
+    return true;
+}
+
+void Application::scheduleNextMidnightRestart() {
+    auto now = std::chrono::system_clock::now();
+    auto midnight = std::chrono::system_clock::to_time_t(now);
+    
+    // 다음 자정 계산
+    std::tm* tm = std::localtime(&midnight);
+    tm->tm_hour = 0;
+    tm->tm_min = 0;
+    tm->tm_sec = 0;
+    tm->tm_mday += 1;
+    
+    auto next_midnight = std::chrono::system_clock::from_time_t(std::mktime(tm));
+    auto duration = next_midnight - now;
+    
+    // 자정 5분 전에 녹화 중지
+    auto stop_duration = duration - std::chrono::minutes(5);
+    
+    midnightTimer_ = std::make_unique<Timer>();
+    midnightTimer_->setTimeout([this]() {
+        LOG_INFO("Preparing for midnight restart - stopping recordings");
+        
+        // 모든 녹화 중지
+        for (auto& [camIdx, pid] : recordingPids_) {
+            stopRecordingForCamera(camIdx);
+        }
+        
+        // 5분 후 재시작
+        restartTimer_ = std::make_unique<Timer>();
+        restartTimer_->setTimeout([this]() {
+            LOG_INFO("Midnight restart");
+            shutdown();
+            // 시스템이 자동으로 재시작하도록 설정 필요
+            exit(0);
+        }, std::chrono::minutes(5));
+        
+    }, std::chrono::duration_cast<std::chrono::milliseconds>(stop_duration));
+}
+
+void Application::restartRecording() {
+    LOG_INFO("Restarting recording for 5-minute interval");
+    
+    const auto& config = Config::getInstance().getWebRTCConfig();
+    
+    // 현재 시간으로 파일명 생성
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    
+    for (int i = 0; i < config.deviceCnt && i < 2; ++i) {
+        std::stringstream filename;
+        filename << config.recordPath << "/";
+        filename << "cam" << i << "_";
+        filename << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
+        filename << ".mp4";
+        
+        // FFmpeg로 녹화 시작
+        startRecordingForCamera(i, filename.str());
+    }
+}
+
+void Application::startRecordingForCamera(int cameraIndex, const std::string& filename) {
+    const auto& config = Config::getInstance().getWebRTCConfig();
+    
+    // 이전 녹화 프로세스 종료
+    stopRecordingForCamera(cameraIndex);
+    
+    // 녹화 포트 (config의 record 설정에서 지정된 포트)
+    int recordPort = 7000 + cameraIndex;
+    
+    // FFmpeg 명령 구성
+    std::stringstream cmd;
+    cmd << "ffmpeg -y ";
+    cmd << "-i udp://127.0.0.1:" << recordPort << " ";
+    cmd << "-c copy ";
+    cmd << "-f mp4 ";
+    cmd << "-movflags +faststart ";
+    cmd << filename << " ";
+    cmd << "2>/dev/null";
+    
+    // 프로세스 실행
+    pid_t pid = fork();
+    if (pid == 0) {
+        // 자식 프로세스
+        execl("/bin/sh", "sh", "-c", cmd.str().c_str(), nullptr);
+        _exit(1);
+    } else if (pid > 0) {
+        // 부모 프로세스
+        recordingPids_[cameraIndex] = pid;
+        LOG_INFO("Started recording for camera {} to {}", cameraIndex, filename);
+    }
+}
+
+void Application::stopRecordingForCamera(int cameraIndex) {
+    auto it = recordingPids_.find(cameraIndex);
+    if (it != recordingPids_.end() && it->second > 0) {
+        LOG_INFO("Stopping recording for camera {}", cameraIndex);
+        kill(it->second, SIGTERM);
+        waitpid(it->second, nullptr, WNOHANG);
+        recordingPids_.erase(it);
+    }
 }
 
 bool Application::setupWebSocket() {

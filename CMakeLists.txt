@@ -13,8 +13,7 @@ endif()
 # 컴파일 옵션
 add_compile_options(-Wall -Wextra -Wpedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_compile_options(-g -O0 -fsanitize=address)
-    add_link_options(-fsanitize=address)
+    add_compile_options(-g -O0 -DDEBUG)
 else()
     add_compile_options(-O3)
 endif()
@@ -22,7 +21,9 @@ endif()
 # 의존성 찾기
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
-find_package(jsoncpp REQUIRED)
+
+# fmt 라이브러리
+find_package(fmt REQUIRED)
 
 # GStreamer
 pkg_check_modules(GST REQUIRED 
@@ -35,8 +36,10 @@ pkg_check_modules(GST REQUIRED
 
 # 기타 라이브러리
 pkg_check_modules(SOUP REQUIRED libsoup-2.4)
-pkg_check_modules(JSON REQUIRED json-glib-1.0)
-pkg_check_modules(NICE REQUIRED nice)
+pkg_check_modules(GLIB REQUIRED glib-2.0)
+
+# nlohmann_json 찾기
+find_package(nlohmann_json REQUIRED)
 
 add_compile_definitions(GST_USE_UNSTABLE_API)
 
@@ -44,6 +47,7 @@ add_compile_definitions(GST_USE_UNSTABLE_API)
 find_package(OpenCV QUIET)
 if(OpenCV_FOUND)
     add_definitions(-DHAVE_OPENCV)
+    message(STATUS "OpenCV found: ${OpenCV_VERSION}")
 endif()
 
 # 소스 파일
@@ -78,9 +82,7 @@ target_include_directories(webrtc_camera PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${GST_INCLUDE_DIRS}
     ${SOUP_INCLUDE_DIRS}
-    ${JSON_INCLUDE_DIRS}
-    ${NICE_INCLUDE_DIRS}
-    /usr/include/jsoncpp
+    ${GLIB_INCLUDE_DIRS}
 )
 
 if(OpenCV_FOUND)
@@ -91,29 +93,35 @@ endif()
 target_link_libraries(webrtc_camera
     ${GST_LIBRARIES}
     ${SOUP_LIBRARIES}
-    ${JSON_LIBRARIES}
-    ${NICE_LIBRARIES}
+    ${GLIB_LIBRARIES}
     Threads::Threads
     stdc++fs
-    jsoncpp
+    fmt::fmt
+    nlohmann_json::nlohmann_json
 )
 
 if(OpenCV_FOUND)
     target_link_libraries(webrtc_camera ${OpenCV_LIBS})
 endif()
 
+# 컴파일 플래그
+target_compile_options(webrtc_camera PRIVATE ${GST_CFLAGS_OTHER})
+
 # 설치
 install(TARGETS webrtc_camera RUNTIME DESTINATION bin)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/ DESTINATION etc/webrtc_camera)
 
-# 테스트
-enable_testing()
-add_subdirectory(tests)
+# 테스트 (선택적)
+option(BUILD_TESTS "Build tests" OFF)
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # 패키징
 set(CPACK_PACKAGE_NAME "WebRTCCamera")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_GENERATOR "DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Your Name")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, libfmt-dev, nlohmann-json3-dev")
 include(CPack)

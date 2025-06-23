@@ -8,48 +8,105 @@
 
 class Config {
 public:
+    // 비디오 설정 구조체
     struct VideoConfig {
-        std::string source;
-        std::string encoder;
-        std::string inferConfig;
-        int bitrate = 0;
+        std::string src;
+        std::string record;
+        std::string infer;
+        std::string enc;
+        std::string enc2;
+        std::string snapshot;
     };
 
+    // WebRTC 설정 구조체
     struct WebRTCConfig {
+        // 기본 설정
         std::string cameraId;
         std::string serverIp;
+        int commSocketPort = 6000;
         int maxStreamCount = 10;
         int streamBasePort = 5000;
-        int commSocketPort = 8080;
-        int statusTimerInterval = 5000;
-        std::vector<VideoConfig> videoConfigs;
+        int deviceCnt = 2;
         
-        // 추가 멤버들
-        int deviceCnt = 1;
-        std::string codecName = "H264";
-        std::string snapshotPath = "/tmp/snapshots";
+        // 경로 설정
+        std::string snapshotPath = "/home/nvidia/webrtc";
         std::string recordPath = "/home/nvidia/data";
-        int recordDuration = 60;
-        int eventBufTime = 10;
-        std::string ttyName;
+        std::string deviceSettingPath = "/home/nvidia/webrtc/device_setting.json";
+        
+        // 녹화 설정
+        int recordDuration = 5;  // 분 단위
+        int recordEncIndex = 1;
+        int eventRecordEncIndex = 0;
+        int eventBufTime = 15;
+        
+        // 서버 설정
+        std::string eventUserId = "itechour";
+        std::string eventUserPw = "12341234";
+        std::string eventServerIp = "52.194.238.184";
+        
+        // 기타 설정
+        int statusTimerInterval = 5000;
+        std::string httpServicePort = "9617";
+        
+        // TTY 설정
+        std::string ttyName = "/dev/ttyTHS0";
         int ttyBaudrate = 38400;
         
-        // 배열 형태의 설정들 (기존 코드 호환성)
-        std::string videoSrc[2];
-        std::string videoEnc[2];
-        std::string videoEnc2[2];
-        std::string videoInfer[2];
-        std::string recordEnc[2];
-        std::string snapshotEnc[2];
+        // 비디오 설정들 (video0, video1)
+        VideoConfig video[2];
     };
 
+    // 디바이스 설정 구조체
     struct DeviceSettings {
-        int colorPalette = 0;
-        bool recordStatus = false;
-        bool analysisStatus = false;
-        int autoPtzMoveSpeed = 0x08;
-        int ptzMoveSpeed = 0x10;
-        // ... 더 많은 설정들
+        // 기본 설정
+        int colorPalette = 6;
+        bool recordStatus = true;
+        bool analysisStatus = true;
+        
+        // PTZ 설정
+        std::string autoPtzSeq = "0,1,2,3,4,5,6,7,8,9,FF,15";
+        std::vector<std::string> ptzPreset;
+        std::vector<std::string> autoPtzPreset;
+        int autoPtzMoveSpeed = 48;
+        int ptzMoveSpeed = 48;
+        
+        // 이벤트 설정
+        bool enableEventNotify = true;
+        int cameraDnMode = 1;
+        int nvInterval = 2;
+        
+        // 옵티컬 플로우 설정
+        int optFlowThreshold = 11;
+        bool optFlowApply = true;
+        
+        // ResNet50 설정
+        int resnet50Threshold = 6;
+        bool resnet50Apply = false;
+        
+        // 임계값 설정
+        int normalThreshold = 30;
+        int heatThreshold = 101;
+        int flipThreshold = 80;
+        int laborSignThreshold = 101;
+        int normalSittingThreshold = 25;
+        
+        // 시간 설정
+        int heatTime = 15;
+        int flipTime = 15;
+        int laborSignTime = 15;
+        int overTempTime = 15;
+        
+        // 온도 설정
+        bool tempApply = true;
+        bool displayTemp = true;
+        int tempDiffThreshold = 12;
+        int tempCorrection = 8;
+        int thresholdUpperTemp = 35;
+        int thresholdUnderTemp = 15;
+        
+        // 기타 설정
+        int cameraIndex = 0;
+        bool showNormalText = false;
     };
 
     static Config& getInstance() {
@@ -62,6 +119,7 @@ public:
     bool saveDeviceSettings();
 
     const WebRTCConfig& getWebRTCConfig() const { return webrtcConfig_; }
+    const DeviceSettings& getDeviceSettings() const { return deviceSettings_; }
     DeviceSettings& getDeviceSettings() { return deviceSettings_; }
 
 private:

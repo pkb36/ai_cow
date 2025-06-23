@@ -4,6 +4,7 @@
 #include <csignal>
 #include <execinfo.h>
 #include <cxxabi.h>
+#include <sys/resource.h>
 
 namespace {
     // 시그널 핸들러

@@ -74,12 +74,12 @@ void WebSocketClient::sendBinary(const std::vector<uint8_t>& data) {
     }
     
     GBytes* bytes = g_bytes_new(data.data(), data.size());
-    soup_websocket_connection_send_binary(impl_->connection, bytes.data(), bytes.size());
+    soup_websocket_connection_send_binary(impl_->connection, bytes);
     g_bytes_unref(bytes);
 }
 
-void WebSocketClient::onConnected(GObject* source_object, GAsyncResult* res, gpointer user_data) {
-    auto* client = static_cast<WebSocketClient*>(user_data);
+void WebSocketClient::onConnected(SoupSession* session, GAsyncResult* result, gpointer userData) {
+    auto* client = static_cast<WebSocketClient*>(userData);
     
     GError* error = nullptr;
     client->impl_->connection = soup_session_websocket_connect_finish(
@@ -106,7 +106,7 @@ void WebSocketClient::onConnected(GObject* source_object, GAsyncResult* res, gpo
         client->connectedCallback_();
     }
 }
-
+    
 void WebSocketClient::onMessage(SoupWebsocketConnection* conn,
                                SoupWebsocketDataType type,
                                GBytes* message,

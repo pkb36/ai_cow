@@ -1,5 +1,6 @@
 #include "network/WebRTCManager.hpp"
 #include "core/Logger.hpp"
+#include <nlohmann/json.hpp>
 
 WebRTCManager::WebRTCManager(std::shared_ptr<Pipeline> pipeline)
     : pipeline_(pipeline) {

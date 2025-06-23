@@ -6,7 +6,7 @@
 #include <memory>
 #include <sstream>
 #include <chrono>
-#include <fmt/format.h>  // C++20의 std::format 대신 사용
+#include <fmt/format.h>
 
 enum class LogLevel {
     TRACE = 0,
@@ -31,29 +31,13 @@ public:
     void log(LogLevel level, const std::string& format, Args&&... args) {
         if (level < minLevel_) return;
         
-        auto message = fmt::format(format, std::forward<Args>(args)...);
+        std::string message;
+        if constexpr (sizeof...(args) == 0) {
+            message = format;
+        } else {
+            message = fmt::format(format, std::forward<Args>(args)...);
+        }
         writeLog(level, message);
-    }
-
-    // 편의 함수들
-    template<typename... Args>
-    void trace(const std::string& format, Args&&... args) {
-        log(LogLevel::TRACE, format, std::forward<Args>(args)...);
-    }
-
-    template<typename... Args>
-    void debug(const std::string& format, Args&&... args) {
-        log(LogLevel::DEBUG, format, std::forward<Args>(args)...);
-    }
-
-    template<typename... Args>
-    void info(const std::string& format, Args&&... args) {
-        log(LogLevel::INFO, format, std::forward<Args>(args)...);
-    }
-
-    template<typename... Args>
-    void error(const std::string& format, Args&&... args) {
-        log(LogLevel::ERROR, format, std::forward<Args>(args)...);
     }
 
 private:
@@ -70,8 +54,16 @@ private:
 };
 
 // 전역 로거 매크로
-#define LOG_TRACE(...) Logger::getInstance().trace(__VA_ARGS__)
-#define LOG_DEBUG(...) Logger::getInstance().debug(__VA_ARGS__)
-#define LOG_INFO(...) Logger::getInstance().info(__VA_ARGS__)
-#define LOG_WARNING(...) Logger::getInstance().error(__VA_ARGS__)
-#define LOG_ERROR(...) Logger::getInstance().error(__VA_ARGS__)
+#define LOG_TRACE(...) Logger::getInstance().log(LogLevel::TRACE, __VA_ARGS__)
+#define LOG_DEBUG(...) Logger::getInstance().log(LogLevel::DEBUG, __VA_ARGS__)
+#define LOG_INFO(...) Logger::getInstance().log(LogLevel::INFO, __VA_ARGS__)
+#define LOG_WARNING(...) Logger::getInstance().log(LogLevel::WARNING, __VA_ARGS__)
+#define LOG_ERROR(...) Logger::getInstance().log(LogLevel::ERROR, __VA_ARGS__)
+#define LOG_CRITICAL(...) Logger::getInstance().log(LogLevel::CRITICAL, __VA_ARGS__)
+
+// LOG_LEVEL_DEBUG 정의 (SerialPort.cpp에서 사용)
+#ifdef DEBUG
+#define LOG_LEVEL_DEBUG 1
+#else
+#define LOG_LEVEL_DEBUG 0
+#endif

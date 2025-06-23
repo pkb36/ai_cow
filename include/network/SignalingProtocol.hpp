@@ -2,8 +2,8 @@
 
 #include <string>
 #include <optional>
-#include <variant>
 #include <nlohmann/json.hpp>
+#include <variant>
 
 // 시그널링 메시지 타입들
 namespace Signaling {
@@ -58,7 +58,7 @@ struct CommandMessage {
 };
 
 // 모든 메시지 타입을 포함하는 variant
-using Message = std::variant
+using Message = std::variant<
     RegisterMessage,
     CameraStatusMessage,
     PeerJoinedMessage,

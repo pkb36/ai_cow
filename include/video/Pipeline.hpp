@@ -8,6 +8,7 @@
 #include <optional>
 #include <gst/gst.h>
 #include <gst/gstpad.h>
+#include "core/Config.hpp"
 
 // GStreamer 객체를 위한 커스텀 삭제자
 template<typename T>
@@ -34,22 +35,11 @@ enum class StreamType : int {
 
 class Pipeline {
 public:
-    struct CameraConfig {
-        std::string source;
-        std::string encoder;
-        std::string encoder2;
-        std::string inferConfig;
-        std::string recordEncoder;
-        std::string snapshotEncoder;
-        int deviceIndex;
-    };
-
     struct PipelineConfig {
-        std::vector<CameraConfig> cameras;
+        Config::WebRTCConfig webrtcConfig;
         std::string snapshotPath = "/tmp/snapshots";
         int maxStreamCount = 10;
         int basePort = 5000;
-        std::string codecName = "H264";
     };
 
     Pipeline();
