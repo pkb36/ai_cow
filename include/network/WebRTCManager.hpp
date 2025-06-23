@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <functional>
+#include <json/json.h>
 #include "network/WebRTCPeer.hpp"
 #include "video/Pipeline.hpp"
 

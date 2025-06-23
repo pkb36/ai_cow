@@ -73,4 +73,5 @@ private:
 #define LOG_TRACE(...) Logger::getInstance().trace(__VA_ARGS__)
 #define LOG_DEBUG(...) Logger::getInstance().debug(__VA_ARGS__)
 #define LOG_INFO(...) Logger::getInstance().info(__VA_ARGS__)
+#define LOG_WARNING(...) Logger::getInstance().error(__VA_ARGS__)
 #define LOG_ERROR(...) Logger::getInstance().error(__VA_ARGS__)

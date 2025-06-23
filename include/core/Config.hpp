@@ -23,6 +23,24 @@ public:
         int commSocketPort = 8080;
         int statusTimerInterval = 5000;
         std::vector<VideoConfig> videoConfigs;
+        
+        // 추가 멤버들
+        int deviceCnt = 1;
+        std::string codecName = "H264";
+        std::string snapshotPath = "/tmp/snapshots";
+        std::string recordPath = "/home/nvidia/data";
+        int recordDuration = 60;
+        int eventBufTime = 10;
+        std::string ttyName;
+        int ttyBaudrate = 38400;
+        
+        // 배열 형태의 설정들 (기존 코드 호환성)
+        std::string videoSrc[2];
+        std::string videoEnc[2];
+        std::string videoEnc2[2];
+        std::string videoInfer[2];
+        std::string recordEnc[2];
+        std::string snapshotEnc[2];
     };
 
     struct DeviceSettings {

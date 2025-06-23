@@ -31,7 +31,7 @@ public:
 
 private:
     // Soup 콜백들 (static 함수로)
-    static void onConnected(SoupSession* session, GAsyncResult* res, gpointer userData);
+    static void onConnected(GObject* source_object, GAsyncResult* res, gpointer user_data);
     static void onMessage(SoupWebsocketConnection* conn, SoupWebsocketDataType type, 
                          GBytes* message, gpointer userData);
     static void onClosed(SoupWebsocketConnection* conn, gpointer userData);

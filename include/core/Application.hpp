@@ -4,6 +4,7 @@
 #include <atomic>
 #include <thread>
 #include <glib.h>
+#include <filesystem>
 #include "utils/Singleton.hpp"
 
 // Forward declarations

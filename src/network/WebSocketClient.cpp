@@ -35,10 +35,7 @@ bool WebSocketClient::connect(const std::string& url) {
 
     soup_session_websocket_connect_async(
         impl_->session, msg, nullptr, nullptr, nullptr,
-        [](GObject* source, GAsyncResult* result, gpointer userData) {
-            auto* client = static_cast<WebSocketClient*>(userData);
-            client->onConnected(source, result);
-        },
+        &WebSocketClient::onConnected,
         this
     );
 
@@ -70,30 +67,43 @@ void WebSocketClient::sendText(const std::string& message) {
     soup_websocket_connection_send_text(impl_->connection, message.c_str());
 }
 
-void WebSocketClient::onConnected(GObject* source, GAsyncResult* result) {
+void WebSocketClient::sendBinary(const std::vector<uint8_t>& data) {
+    if (!isConnected()) {
+        LOG_ERROR("Not connected");
+        return;
+    }
+    
+    GBytes* bytes = g_bytes_new(data.data(), data.size());
+    soup_websocket_connection_send_binary(impl_->connection, bytes.data(), bytes.size());
+    g_bytes_unref(bytes);
+}
+
+void WebSocketClient::onConnected(GObject* source_object, GAsyncResult* res, gpointer user_data) {
+    auto* client = static_cast<WebSocketClient*>(user_data);
+    
     GError* error = nullptr;
-    impl_->connection = soup_session_websocket_connect_finish(
-        SOUP_SESSION(source), result, &error);
+    client->impl_->connection = soup_session_websocket_connect_finish(
+        session, result, &error);
     
     if (error) {
         LOG_ERROR("WebSocket connection failed: {}", error->message);
         g_error_free(error);
-        if (disconnectedCallback_) {
-            disconnectedCallback_();
+        if (client->disconnectedCallback_) {
+            client->disconnectedCallback_();
         }
         return;
     }
     
-    impl_->connected = true;
+    client->impl_->connected = true;
     
     // 시그널 연결
-    g_signal_connect(impl_->connection, "message",
-                     G_CALLBACK(&WebSocketClient::onMessage), this);
-    g_signal_connect(impl_->connection, "closed",
-                     G_CALLBACK(&WebSocketClient::onClosed), this);
+    g_signal_connect(client->impl_->connection, "message",
+                     G_CALLBACK(&WebSocketClient::onMessage), client);
+    g_signal_connect(client->impl_->connection, "closed",
+                     G_CALLBACK(&WebSocketClient::onClosed), client);
     
-    if (connectedCallback_) {
-        connectedCallback_();
+    if (client->connectedCallback_) {
+        client->connectedCallback_();
     }
 }
 

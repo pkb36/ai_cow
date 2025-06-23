@@ -1,6 +1,6 @@
 #include "network/WebRTCPeer.hpp"
 #include "core/Logger.hpp"
-#include <json/json.h>
+#include <nlohmann/json.hpp>
 
 struct WebRTCPeer::Impl {
     GstElement* webrtcbin = nullptr;

@@ -22,6 +22,7 @@ endif()
 # 의존성 찾기
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+find_package(jsoncpp REQUIRED)
 
 # GStreamer
 pkg_check_modules(GST REQUIRED 
@@ -36,6 +37,8 @@ pkg_check_modules(GST REQUIRED
 pkg_check_modules(SOUP REQUIRED libsoup-2.4)
 pkg_check_modules(JSON REQUIRED json-glib-1.0)
 pkg_check_modules(NICE REQUIRED nice)
+
+add_compile_definitions(GST_USE_UNSTABLE_API)
 
 # OpenCV (선택적)
 find_package(OpenCV QUIET)
@@ -77,6 +80,7 @@ target_include_directories(webrtc_camera PRIVATE
     ${SOUP_INCLUDE_DIRS}
     ${JSON_INCLUDE_DIRS}
     ${NICE_INCLUDE_DIRS}
+    /usr/include/jsoncpp
 )
 
 if(OpenCV_FOUND)
@@ -91,6 +95,7 @@ target_link_libraries(webrtc_camera
     ${NICE_LIBRARIES}
     Threads::Threads
     stdc++fs
+    jsoncpp
 )
 
 if(OpenCV_FOUND)
