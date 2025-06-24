@@ -43,11 +43,24 @@ namespace {
                 }
                 free(symbols);
             }
+            
+#ifdef HAVE_CUDA
+            // CUDA 관련 정보 출력
+            int device;
+            cudaError_t err = cudaGetDevice(&device);
+            if (err == cudaSuccess) {
+                LOG_CRITICAL("Current CUDA device: {}", device);
+            }
+#endif
+            
+            // 비정상 종료 시에는 빠른 정리
+            _exit(1);
         }
         
+        // 정상적인 종료 요청
         Application::getInstance().shutdown();
         
-        if (signal == SIGSEGV || signal == SIGABRT) {
+        if (signal == SIGABRT) {
             std::abort();
         }
     }
@@ -82,8 +95,9 @@ int main(int argc, char* argv[]) {
         // 배너 출력
         printBanner();
 
-        if (std::getenv("DISPLAY")) {
-            std::cout << "DISPLAY 환경변수 제거 중..." << std::endl;
+        if (getenv("DISPLAY"))
+        {
+            printf("DISPLAY 환경변수 제거 중...\n");
             unsetenv("DISPLAY");
         }
         

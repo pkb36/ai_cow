@@ -9,8 +9,10 @@
 #include <set>
 #include <gst/gst.h>
 #include <gst/gstpad.h>
+#include <thread>
 #include "core/Config.hpp"
 
+// GStreamer 객체를 위한 커스텀 삭제자
 template<typename T>
 struct GstDeleter {
     void operator()(T* ptr) const {
@@ -49,7 +51,7 @@ public:
         CameraDevice device;
         StreamType type;
         int port;
-        GstElement* teepad = nullptr;
+        GstPad* teepad = nullptr;  
         GstElement* queue = nullptr;
         GstElement* udpsink = nullptr;
         bool active = false;

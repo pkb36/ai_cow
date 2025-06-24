@@ -33,10 +33,7 @@ void MessageHandler::handleMessage(const std::string& message) {
         [this](const Signaling::AnswerMessage& msg) { handleAnswer(msg); },
         [this](const Signaling::IceCandidateMessage& msg) { handleIceCandidate(msg); },
         [this](const Signaling::CommandMessage& msg) { handleCommand(msg); },
-        [this](const Signaling::RegisterMessage& msg) { handleRegister(msg); },
-        [this](const Signaling::CameraStatusMessage& msg) { handleCameraStatus(msg); },
-        [this](const Signaling::OfferMessage& msg) { handleOffer(msg); },
-        [](const auto& msg) {
+        [](const auto&) {  // 매개변수 이름 제거
             LOG_WARNING("Unhandled message type");
         }
     }, *parsedMsg);
@@ -80,16 +77,6 @@ void MessageHandler::handleCommand(const Signaling::CommandMessage& msg) {
     } else {
         LOG_WARNING("Unknown command: {}", msg.command);
     }
-}
-
-void MessageHandler::handleRegister(const Signaling::RegisterMessage& msg) {
-    LOG_INFO("Received RegisterMessage");
-}
-
-void MessageHandler::handleCameraStatus(const Signaling::CameraStatusMessage& msg)
-{
-    LOG_INFO("Received CameraStatusMessage: Record Status: {}, Record Usage: {}, CPU Temp: {}, GPU Temp: {}",
-             msg.recordStatus, msg.recordUsage, msg.cpuTemp, msg.gpuTemp);
 }
 
 void MessageHandler::handleOffer(const Signaling::OfferMessage& msg)

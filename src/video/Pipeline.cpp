@@ -110,23 +110,28 @@ std::string Pipeline::Impl::buildPipelineString() {
     for (int i = 0; i < webrtcConfig.deviceCnt && i < 2; ++i) {
         const auto& video = webrtcConfig.video[i];
         
-        // 1. 비디오 소스
+        // 1. 비디오 소스와 녹화 브랜치
         ss << video.src << " ";
-        
-        // 2. 녹화 브랜치 (고정 포트로 UDP 출력)
         ss << video.record << " ";
         
-        // 3. 추론 브랜치
+        // 2. 추론 브랜치가 있는 경우
         if (!video.infer.empty()) {
             ss << video.infer << " ";
+            
+            // 추론 후 메인 인코더를 위한 tee
+            ss << "tee name=infer_tee_" << i << " ";
+            ss << "infer_tee_" << i << ". ! queue ! ";
         }
         
-        // 4. 동적 스트리밍을 위한 tee 추가
-        // 메인 스트림용 tee
-        ss << "tee name=stream_tee_main_" << i << " allow-not-linked=true ! fakesink ";
+        // 3. 메인 인코더
+        ss << video.enc;
+        ss << "tee name=stream_tee_main_" << i << " allow-not-linked=true ";
+        ss << "stream_tee_main_" << i << ". ! fakesink ";
         
-        // 서브 스트림용 tee  
-        ss << "tee name=stream_tee_sub_" << i << " allow-not-linked=true ! fakesink ";
+        // 4. 서브 인코더  
+        ss << video.enc2;
+        ss << "tee name=stream_tee_sub_" << i << " allow-not-linked=true ";
+        ss << "stream_tee_sub_" << i << ". ! fakesink ";
         
         // 5. 스냅샷 브랜치
         ss << video.snapshot;
@@ -250,7 +255,7 @@ bool Pipeline::Impl::createDynamicSink(DynamicStreamInfo& info) {
         return false;
     }
     
-    info.teepad = teeSrcPad;
+    info.teepad = teeSrcPad;  // 이제 타입이 맞음
     gst_object_unref(queueSinkPad);
     gst_object_unref(tee);
     
@@ -324,7 +329,7 @@ bool Pipeline::Impl::removeDynamicSink(const std::string& peerId) {
     
     // Tee 패드 해제
     if (info.teepad) {
-        gst_element_release_request_pad(tee, info.teepad);
+        gst_element_release_request_pad(tee, info.teepad);  // 이제 타입이 맞음
         gst_object_unref(info.teepad);
         info.teepad = nullptr;
     }
@@ -422,20 +427,63 @@ bool Pipeline::stop() {
     
     impl_->running = false;
     
-    // 모든 동적 스트림 제거
+    // 1. 모든 프로브 제거 (CUDA 작업 중단)
+    for (const auto& [elementName, probeId] : impl_->probeIds) {
+        if (auto* element = getElement(elementName)) {
+            if (auto* pad = gst_element_get_static_pad(element, "sink")) {
+                gst_pad_remove_probe(pad, probeId);
+                gst_object_unref(pad);
+            }
+        }
+    }
+    impl_->probeIds.clear();
+    impl_->probeCallbacks.clear();
+    
+    // 2. 모든 동적 스트림 제거
     std::vector<std::string> peerIds = getActivePeerIds();
     for (const auto& peerId : peerIds) {
         removeDynamicStream(peerId);
     }
     
-    // 파이프라인 정지
+    // 3. 파이프라인을 PAUSED 상태로 먼저 전환
     GstStateChangeReturn ret = gst_element_set_state(
-        impl_->pipeline.get(), GST_STATE_NULL);
+        impl_->pipeline.get(), GST_STATE_PAUSED);
+    
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        LOG_ERROR("Failed to pause pipeline");
+    } else {
+        // PAUSED 상태 대기
+        GstState state, pending;
+        gst_element_get_state(impl_->pipeline.get(), &state, &pending, 
+                             GST_SECOND * 5); // 5초 타임아웃
+    }
+    
+    // 4. 잠시 대기 (CUDA 작업 완료)
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    // 5. 파이프라인을 NULL 상태로 전환
+    ret = gst_element_set_state(impl_->pipeline.get(), GST_STATE_NULL);
     
     if (ret == GST_STATE_CHANGE_FAILURE) {
         LOG_ERROR("Failed to stop pipeline");
         return false;
     }
+    
+    // 6. NULL 상태 대기
+    GstState state, pending;
+    ret = gst_element_get_state(impl_->pipeline.get(), &state, &pending, 
+                               GST_SECOND * 10); // 10초 타임아웃
+    
+    if (ret == GST_STATE_CHANGE_SUCCESS) {
+        impl_->currentState = GST_STATE_NULL;
+        LOG_INFO("Pipeline stopped successfully");
+    } else {
+        LOG_WARNING("Pipeline state change timeout or failure");
+    }
+    
+    // 7. 엘리먼트 참조 해제
+    impl_->elements.clear();
+    impl_->teeElements.clear();
     
     LOG_INFO("Pipeline stopped");
     return true;
@@ -461,67 +509,6 @@ GstElement* Pipeline::getElement(const std::string& name) {
     }
     
     return nullptr;
-}
-
-std::string Pipeline::Impl::buildPipelineString() {
-    const auto& webrtcConfig = config.webrtcConfig;
-    std::stringstream ss;
-    
-    // 각 비디오 소스에 대한 파이프라인 구성
-    for (int i = 0; i < webrtcConfig.deviceCnt && i < 2; ++i) {
-        const auto& video = webrtcConfig.video[i];
-        
-        // 1. 비디오 소스
-        ss << video.src << " ";
-        
-        // 2. 녹화 브랜치 (UDP로 출력)
-        ss << video.record << " ";
-        
-        // 3. 추론 브랜치 - dspostproc 제거하고 nvtracker로 대체
-        if (!video.infer.empty()) {
-            std::string inferStr = video.infer;
-            
-            // dspostproc 관련 부분 제거
-            size_t dspostprocPos = inferStr.find("dspostproc");
-            if (dspostprocPos != std::string::npos) {
-                // dspostproc name=dspostproc_X ! 부분을 찾아서 제거
-                size_t endPos = inferStr.find("!", dspostprocPos);
-                if (endPos != std::string::npos) {
-                    // dspostproc 엘리먼트 전체를 nvtracker로 대체
-                    std::string trackerStr = "nvtracker ll-lib-file=/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so ll-config-file=/home/nvidia/webrtc/tracker_config.yml !";
-                    inferStr.replace(dspostprocPos, endPos - dspostprocPos + 1, trackerStr);
-                }
-            }
-            
-            // nvof 제거 (옵션)
-            size_t nvofPos = inferStr.find("nvof");
-            if (nvofPos != std::string::npos) {
-                size_t nvofEndPos = inferStr.find("!", nvofPos);
-                if (nvofEndPos != std::string::npos) {
-                    inferStr.erase(nvofPos, nvofEndPos - nvofPos + 1);
-                }
-            }
-            
-            ss << inferStr << " ";
-        }
-        
-        // 4. 동적 스트리밍을 위한 tee (allow-not-linked 추가)
-        ss << "tee name=dynamic_tee_main_" << i << " allow-not-linked=true ";
-        
-        // 5. 메인 인코더 브랜치
-        ss << "dynamic_tee_main_" << i << ". ! queue max-size-buffers=10 leaky=downstream ! " << video.enc;
-        ss << "tee name=dynamic_tee_main_enc_" << i << " allow-not-linked=true ";
-        
-        // 6. 서브 인코더 브랜치
-        ss << "dynamic_tee_main_" << i << ". ! queue max-size-buffers=10 leaky=downstream ! " << video.enc2;
-        ss << "tee name=dynamic_tee_sub_enc_" << i << " allow-not-linked=true ";
-        
-        // 7. 스냅샷 브랜치
-        ss << "dynamic_tee_main_" << i << ". ! queue ! " << video.snapshot;
-        ss << "location=" << webrtcConfig.snapshotPath << "/cam" << i << "_snapshot.jpg ";
-    }
-    
-    return ss.str();
 }
 
 bool Pipeline::Impl::registerElements() {
@@ -564,7 +551,7 @@ bool Pipeline::Impl::registerElements() {
 
 // OSD 프로브 설정
 bool Pipeline::Impl::setupOsdProbes() {
-    for (size_t i = 0; i < config.cameras.size(); ++i) {
+    for (int i = 0; i < config.cameras; ++i) {
         std::string elementName = "nvosd_" + std::to_string(i + 1);
         auto it = elements.find(elementName);
         
@@ -707,7 +694,7 @@ Pipeline::Statistics Pipeline::getStatistics(CameraDevice device) const {
 }
 
 // 버스 메시지 핸들러
-gboolean Pipeline::Impl::busCallback(GstBus* bus, GstMessage* message, gpointer userData) {
+gboolean Pipeline::Impl::busCallback(GstBus*, GstMessage* message, gpointer userData) {
     auto* pipeline = static_cast<Pipeline*>(userData);
     
     switch (GST_MESSAGE_TYPE(message)) {
@@ -718,6 +705,21 @@ gboolean Pipeline::Impl::busCallback(GstBus* bus, GstMessage* message, gpointer 
             LOG_ERROR("Pipeline error from {}: {}", 
                      GST_OBJECT_NAME(message->src), err->message);
             LOG_DEBUG("Debug info: {}", debug ? debug : "none");
+            
+            // CUDA 관련 에러 체크
+            if (err->message && (strstr(err->message, "CUDA") || 
+                                strstr(err->message, "nvvideoconvert") ||
+                                strstr(err->message, "nvinfer"))) {
+                LOG_ERROR("CUDA-related error detected. May need to restart.");
+                
+                // CUDA 디바이스 리셋 시도
+                // cudaError_t cudaErr = cudaDeviceReset();
+                // if (cudaErr != cudaSuccess) {
+                //     LOG_ERROR("Failed to reset CUDA device: {}", 
+                //              cudaGetErrorString(cudaErr));
+                // }
+            }
+            
             g_error_free(err);
             g_free(debug);
             break;
@@ -746,6 +748,18 @@ gboolean Pipeline::Impl::busCallback(GstBus* bus, GstMessage* message, gpointer 
                          gst_element_state_get_name(oldState),
                          gst_element_state_get_name(newState));
                 pipeline->impl_->currentState = newState;
+            }
+            break;
+        }
+        
+        case GST_MESSAGE_ELEMENT: {
+            // DeepStream 관련 메시지 처리
+            const GstStructure* structure = gst_message_get_structure(message);
+            if (structure) {
+                const gchar* name = gst_structure_get_name(structure);
+                if (name && strstr(name, "nvstreammux")) {
+                    LOG_DEBUG("nvstreammux message: {}", name);
+                }
             }
             break;
         }

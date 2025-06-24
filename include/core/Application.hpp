@@ -8,6 +8,11 @@
 #include <functional>
 #include <glib.h>
 #include <gst/gst.h>
+
+#ifdef HAVE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 #include "utils/Singleton.hpp"
 #include "video/EventRecorder.hpp"
 #include "network/WebSocketClient.hpp"

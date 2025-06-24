@@ -196,38 +196,52 @@ bool Application::initializeLogging() {
 bool Application::initializeGStreamer() {
     LOG_INFO("Initializing GStreamer...");
     
+    // CUDA 초기화 (GStreamer보다 먼저)
+    cudaError_t cudaStatus = cudaSetDevice(0);
+    if (cudaStatus != cudaSuccess) {
+        LOG_WARNING("Failed to initialize CUDA: {}", cudaGetErrorString(cudaStatus));
+    } else {
+        LOG_INFO("CUDA initialized successfully");
+        
+        // CUDA 컨텍스트 생성
+        cudaFree(0);
+    }
+    
+    // 환경 변수 설정 (CUDA 관련)
+    setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID", 1);
+    setenv("CUDA_VISIBLE_DEVICES", "0", 1);
+    
     GError* error = nullptr;
-   if (!gst_init_check(nullptr, nullptr, &error)) {
-       LOG_ERROR("Failed to initialize GStreamer: {}", 
-                error ? error->message : "Unknown error");
-       if (error) g_error_free(error);
-       return false;
-   }
-   
-   // 필요한 플러그인 확인
-   const char* requiredPlugins[] = {
-       "coreelements", "videoconvert", "videoscale", "videotestsrc",
-       "x264", "vpx", "webrtc", "nice", "dtls", "srtp", "rtpmanager",
-       "v4l2", "nvvideoconvert", "nvv4l2h264enc", "nvjpegenc"
-   };
-   
-   GstRegistry* registry = gst_registry_get();
-   for (const auto& pluginName : requiredPlugins) {
-       GstPlugin* plugin = gst_registry_find_plugin(registry, pluginName);
-       if (!plugin) {
-           LOG_WARNING("GStreamer plugin not found: {} (optional)", pluginName);
-           // 일부 플러그인은 선택적이므로 경고만 출력
-       } else {
-           gst_object_unref(plugin);
-       }
-   }
-   
-   // GStreamer 버전 정보
-   guint major, minor, micro, nano;
-   gst_version(&major, &minor, &micro, &nano);
-   LOG_INFO("GStreamer version: {}.{}.{}.{}", major, minor, micro, nano);
-   
-   return true;
+    if (!gst_init_check(nullptr, nullptr, &error)) {
+        LOG_ERROR("Failed to initialize GStreamer: {}", 
+                 error ? error->message : "Unknown error");
+        if (error) g_error_free(error);
+        return false;
+    }
+    
+    // 필요한 플러그인 확인
+    const char* requiredPlugins[] = {
+        "coreelements", "videoconvert", "videoscale", "videotestsrc",
+        "x264", "vpx", "webrtc", "nice", "dtls", "srtp", "rtpmanager",
+        "nvvideoconvert", "nvv4l2h264enc", "nvstreammux", "nvinfer"
+    };
+    
+    GstRegistry* registry = gst_registry_get();
+    for (const auto& pluginName : requiredPlugins) {
+        GstPlugin* plugin = gst_registry_find_plugin(registry, pluginName);
+        if (!plugin) {
+            LOG_WARNING("GStreamer plugin not found: {} (optional)", pluginName);
+        } else {
+            gst_object_unref(plugin);
+        }
+    }
+    
+    // GStreamer 버전 정보
+    guint major, minor, micro, nano;
+    gst_version(&major, &minor, &micro, &nano);
+    LOG_INFO("GStreamer version: {}.{}.{}.{}", major, minor, micro, nano);
+    
+    return true;
 }
 
 bool Application::initializeHardware() {
@@ -297,11 +311,17 @@ bool Application::createPipeline() {
         return false;
     }
     
+    // 녹화 디렉토리 생성
+    std::filesystem::create_directories(config.recordPath);
+    
+    // 초기 녹화 시작
+    restartRecording();
+    
     // 5분마다 녹화 재시작을 위한 타이머 설정
     recordingTimer_ = std::make_unique<Timer>();
     recordingTimer_->setInterval([this]() {
         restartRecording();
-    }, std::chrono::minutes(5));
+    }, std::chrono::minutes(config.recordDuration));
     
     // 자정 재시작 스케줄러 설정
     scheduleNextMidnightRestart();
@@ -327,6 +347,9 @@ void Application::scheduleNextMidnightRestart() {
     // 자정 5분 전에 녹화 중지
     auto stop_duration = duration - std::chrono::minutes(5);
     
+    LOG_INFO("Next midnight restart scheduled in {} hours", 
+             std::chrono::duration_cast<std::chrono::hours>(duration).count());
+    
     midnightTimer_ = std::make_unique<Timer>();
     midnightTimer_->setTimeout([this]() {
         LOG_INFO("Preparing for midnight restart - stopping recordings");
@@ -336,12 +359,17 @@ void Application::scheduleNextMidnightRestart() {
             stopRecordingForCamera(camIdx);
         }
         
+        // 녹화 타이머 중지
+        if (recordingTimer_) {
+            recordingTimer_->stop();
+        }
+        
         // 5분 후 재시작
         restartTimer_ = std::make_unique<Timer>();
         restartTimer_->setTimeout([this]() {
-            LOG_INFO("Midnight restart");
+            LOG_INFO("Midnight restart - shutting down application");
             shutdown();
-            // 시스템이 자동으로 재시작하도록 설정 필요
+            // systemd 서비스가 자동으로 재시작하도록 설정되어야 함
             exit(0);
         }, std::chrono::minutes(5));
         
@@ -349,7 +377,8 @@ void Application::scheduleNextMidnightRestart() {
 }
 
 void Application::restartRecording() {
-    LOG_INFO("Restarting recording for 5-minute interval");
+    LOG_INFO("Starting/Restarting recording for {}-minute interval", 
+             Config::getInstance().getWebRTCConfig().recordDuration);
     
     const auto& config = Config::getInstance().getWebRTCConfig();
     
@@ -358,29 +387,29 @@ void Application::restartRecording() {
     auto time_t = std::chrono::system_clock::to_time_t(now);
     
     for (int i = 0; i < config.deviceCnt && i < 2; ++i) {
+        // 이전 녹화 종료
+        stopRecordingForCamera(i);
+        
         std::stringstream filename;
         filename << config.recordPath << "/";
         filename << "cam" << i << "_";
         filename << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S");
         filename << ".mp4";
         
-        // FFmpeg로 녹화 시작
+        // 새 녹화 시작
         startRecordingForCamera(i, filename.str());
     }
 }
 
+
 void Application::startRecordingForCamera(int cameraIndex, const std::string& filename) {
     const auto& config = Config::getInstance().getWebRTCConfig();
-
-    if(config.deviceCnt <= cameraIndex) {
-        LOG_ERROR("Invalid camera index: {} (max: {})", cameraIndex, config.deviceCnt - 1);
-    }
-    
-    // 이전 녹화 프로세스 종료
-    stopRecordingForCamera(cameraIndex);
     
     // 녹화 포트 (config의 record 설정에서 지정된 포트)
     int recordPort = 7000 + cameraIndex;
+    
+    // 녹화 시간 계산 (분 단위를 초로 변환)
+    int durationSeconds = config.recordDuration * 60;
     
     // FFmpeg 명령 구성
     std::stringstream cmd;
@@ -389,8 +418,11 @@ void Application::startRecordingForCamera(int cameraIndex, const std::string& fi
     cmd << "-c copy ";
     cmd << "-f mp4 ";
     cmd << "-movflags +faststart ";
+    cmd << "-t " << durationSeconds << " ";  // 녹화 시간 설정
     cmd << filename << " ";
     cmd << "2>/dev/null";
+    
+    LOG_DEBUG("Recording command: {}", cmd.str());
     
     // 프로세스 실행
     pid_t pid = fork();
@@ -401,16 +433,45 @@ void Application::startRecordingForCamera(int cameraIndex, const std::string& fi
     } else if (pid > 0) {
         // 부모 프로세스
         recordingPids_[cameraIndex] = pid;
-        LOG_INFO("Started recording for camera {} to {}", cameraIndex, filename);
+        LOG_INFO("Started recording for camera {} to {} (PID: {})", 
+                 cameraIndex, filename, pid);
+    } else {
+        LOG_ERROR("Failed to fork recording process for camera {}", cameraIndex);
     }
 }
 
 void Application::stopRecordingForCamera(int cameraIndex) {
     auto it = recordingPids_.find(cameraIndex);
     if (it != recordingPids_.end() && it->second > 0) {
-        LOG_INFO("Stopping recording for camera {}", cameraIndex);
+        LOG_INFO("Stopping recording for camera {} (PID: {})", cameraIndex, it->second);
+        
+        // SIGTERM 전송
         kill(it->second, SIGTERM);
-        ::waitpid(it->second, nullptr, WNOHANG);  // :: 접두사로 전역 함수 명시
+        
+        // 프로세스 종료 대기 (최대 5초)
+        int status;
+        int waitTime = 0;
+        while (waitTime < 5000) {
+            pid_t result = ::waitpid(it->second, &status, WNOHANG);
+            if (result == it->second) {
+                LOG_INFO("Recording process {} terminated successfully", it->second);
+                break;
+            } else if (result == -1) {
+                LOG_ERROR("waitpid failed for PID {}: {}", it->second, strerror(errno));
+                break;
+            }
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            waitTime += 100;
+        }
+        
+        // 타임아웃 시 SIGKILL
+        if (waitTime >= 5000) {
+            LOG_WARNING("Recording process {} did not terminate, sending SIGKILL", it->second);
+            kill(it->second, SIGKILL);
+            ::waitpid(it->second, &status, 0);
+        }
+        
         recordingPids_.erase(it);
     }
 }
@@ -461,10 +522,10 @@ bool Application::setupWebSocket() {
    if (!wsClient_->connect(wsUrl)) {
        LOG_ERROR("Failed to initiate WebSocket connection");
        setState(State::ERROR);
-       return false;
+       // 연결 실패해도 계속 실행 (재연결 시도)
    }
    
-   return true;
+   return true;  // 초기 연결 실패해도 true 반환
 }
 
 bool Application::setupMonitoring() {
@@ -574,10 +635,12 @@ bool Application::registerCommands() {
 }
 
 void Application::run() {
-   if (!running_.exchange(true)) {
+   if (running_) {
        LOG_WARNING("Application already running");
        return;
    }
+   
+   running_ = true;
    
    LOG_INFO("Starting application main loop");
    setState(State::RUNNING);
@@ -588,74 +651,125 @@ void Application::run() {
    // 메인 루프 실행
    if (mainLoop_) {
        g_main_loop_run(mainLoop_);
+   } else {
+       // GLib 메인 루프가 없는 경우 직접 루프 실행
+       LOG_WARNING("No GLib main loop, running manual loop");
+       while (running_) {
+           std::this_thread::sleep_for(std::chrono::milliseconds(100));
+       }
    }
    
    LOG_INFO("Main loop ended");
 }
 
+
 void Application::shutdown() {
-   if (!running_.exchange(false)) {
-       return; // 이미 종료 중
-   }
-   
-   LOG_INFO("Shutting down application");
-   setState(State::SHUTTING_DOWN);
-   
-   // 1. 스레드 종료
-   if (heartbeatThread_.joinable()) {
-       heartbeatThread_.join();
-   }
-   
-   // 2. WebSocket 연결 종료
-   if (wsClient_) {
-       wsClient_->disconnect();
-       wsClient_.reset();
-   }
-   
-   // 3. WebRTC 연결 정리
-   if (webrtcManager_) {
-       webrtcManager_->removeAllPeers();
-       webrtcManager_.reset();
-   }
-   
-   // 4. 파이프라인 중지
-   if (pipeline_) {
-       pipeline_->stop();
-       pipeline_.reset();
-   }
-   
-   // 5. 모니터링 중지
-   SystemMonitor::getInstance().stop();
-   EventRecorder::getInstance().shutdown();
-   
-   if (fileWatcher_) {
-       fileWatcher_->stop();
-       fileWatcher_.reset();
-   }
-   
-   // 6. 하드웨어 정리
-   SerialPort::getInstance().close();
-   
-   // 7. 메인 루프 종료
-   if (mainLoop_) {
-       g_main_loop_quit(mainLoop_);
-       g_main_loop_unref(mainLoop_);
-       mainLoop_ = nullptr;
-   }
-   
-   // 통계 출력
-   auto uptime = std::chrono::steady_clock::now() - stats_.startTime;
-   auto hours = std::chrono::duration_cast<std::chrono::hours>(uptime);
-   auto minutes = std::chrono::duration_cast<std::chrono::minutes>(uptime - hours);
-   
-   LOG_INFO("Application statistics:");
-   LOG_INFO("  Uptime: {}h {}m", hours.count(), minutes.count());
-   LOG_INFO("  Messages sent: {}", stats_.messagesSent.load());
-   LOG_INFO("  Messages received: {}", stats_.messagesReceived.load());
-   LOG_INFO("  Reconnect count: {}", stats_.reconnectCount.load());
-   
-   setState(State::UNKNOWN);
-   LOG_INFO("Application shutdown complete");
+    if (!running_.exchange(false)) {
+        return; // 이미 종료 중
+    }
+    
+    LOG_INFO("Shutting down application");
+    setState(State::SHUTTING_DOWN);
+    
+    // 1. 모든 녹화 프로세스 먼저 종료
+    for (auto& [camIdx, pid] : recordingPids_) {
+        stopRecordingForCamera(camIdx);
+    }
+    recordingPids_.clear();
+    
+    // 2. 타이머 중지
+    if (recordingTimer_) {
+        recordingTimer_->stop();
+        recordingTimer_.reset();
+    }
+    if (midnightTimer_) {
+        midnightTimer_->stop();
+        midnightTimer_.reset();
+    }
+    if (restartTimer_) {
+        restartTimer_->stop();
+        restartTimer_.reset();
+    }
+    
+    // 3. 스레드 종료
+    if (heartbeatThread_.joinable()) {
+        heartbeatThread_.join();
+    }
+    
+    // 4. WebSocket 연결 종료
+    if (wsClient_) {
+        wsClient_->disconnect();
+        wsClient_.reset();
+    }
+    
+    // 5. WebRTC 연결 정리
+    if (webrtcManager_) {
+        webrtcManager_->removeAllPeers();
+        webrtcManager_.reset();
+    }
+    
+    // 6. 메시지 핸들러 정리
+    if (messageHandler_) {
+        messageHandler_.reset();
+    }
+    
+    // 7. 파이프라인 중지 (CUDA 리소스 해제 전에)
+    if (pipeline_) {
+        pipeline_->stop();
+        
+        // 파이프라인 상태가 완전히 NULL이 될 때까지 대기
+        int waitCount = 0;
+        while (pipeline_->getState() != GST_STATE_NULL && waitCount < 50) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            waitCount++;
+        }
+        
+        pipeline_.reset();
+    }
+    
+    // 8. 모니터링 중지
+    SystemMonitor::getInstance().stop();
+    EventRecorder::getInstance().shutdown();
+    
+    if (thermalMonitor_) {
+        thermalMonitor_.reset();
+    }
+    
+    if (fileWatcher_) {
+        fileWatcher_->stop();
+        fileWatcher_.reset();
+    }
+    
+    // 9. 하드웨어 정리
+    SerialPort::getInstance().close();
+    
+    // 10. 메인 루프 종료
+    if (mainLoop_) {
+        g_main_loop_quit(mainLoop_);
+        
+        // 메인 루프가 완전히 종료될 때까지 대기
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        g_main_loop_unref(mainLoop_);
+        mainLoop_ = nullptr;
+    }
+    
+    // 11. CUDA 컨텍스트 정리 (마지막에)
+    cudaDeviceReset();
+    
+    // 통계 출력
+    auto uptime = std::chrono::steady_clock::now() - stats_.startTime;
+    auto hours = std::chrono::duration_cast<std::chrono::hours>(uptime);
+    auto minutes = std::chrono::duration_cast<std::chrono::minutes>(uptime - hours);
+    
+    LOG_INFO("Application statistics:");
+    LOG_INFO("  Uptime: {}h {}m", hours.count(), minutes.count());
+    LOG_INFO("  Messages sent: {}", stats_.messagesSent.load());
+    LOG_INFO("  Messages received: {}", stats_.messagesReceived.load());
+    LOG_INFO("  Reconnect count: {}", stats_.reconnectCount.load());
+    
+    setState(State::UNKNOWN);
+    LOG_INFO("Application shutdown complete");
 }
 
 // WebSocket 이벤트 핸들러
@@ -679,10 +793,7 @@ void Application::onWebSocketDisconnected() {
        webrtcManager_->removeAllPeers();
    }
    
-   // 재연결 스케줄
-   if (running_) {
-       checkAndReconnect();
-   }
+   // 재연결은 heartbeat 스레드에서 처리
 }
 
 void Application::onWebSocketMessage(const std::string& message) {
@@ -696,10 +807,15 @@ void Application::onWebSocketMessage(const std::string& message) {
    
    // 등록 완료 확인
    if (getState() == State::REGISTERING) {
-       // 간단한 확인 - 실제로는 메시지 타입을 확인해야 함
-       if (message.find("registered") != std::string::npos) {
-           setState(State::REGISTERED);
-           LOG_INFO("Successfully registered with server");
+       // 등록 성공 메시지 확인
+       try {
+           auto j = nlohmann::json::parse(message);
+           if (j.contains("action") && j["action"] == "registered") {
+               setState(State::REGISTERED);
+               LOG_INFO("Successfully registered with server");
+           }
+       } catch (const std::exception& e) {
+           LOG_TRACE("Message is not JSON or parsing failed: {}", e.what());
        }
    }
 }
@@ -714,14 +830,14 @@ void Application::heartbeatThread() {
    
    while (running_) {
        try {
-           // 카메라 상태 전송
-           if (getState() == State::REGISTERED || getState() == State::RUNNING) {
-               sendCameraStatus();
-           }
-           
-           // 재연결 체크
-           if (getState() == State::CONNECTING || getState() == State::ERROR) {
+           // WebSocket 연결 상태 확인 및 재연결
+           if (!wsClient_ || !wsClient_->isConnected()) {
                checkAndReconnect();
+           } else {
+               // 카메라 상태 전송
+               if (getState() == State::REGISTERED || getState() == State::RUNNING) {
+                   sendCameraStatus();
+               }
            }
            
            // 디바이스 설정 적용 (변경된 경우)
@@ -772,6 +888,10 @@ void Application::sendCameraStatus() {
 }
 
 void Application::checkAndReconnect() {
+   if (!wsClient_ || wsClient_->isConnected()) {
+       return;  // 이미 연결되어 있으면 재연결 불필요
+   }
+   
    auto now = std::chrono::steady_clock::now();
    auto timeSinceLastAttempt = std::chrono::duration_cast<std::chrono::seconds>(
        now - lastReconnectTime_).count();
@@ -788,13 +908,14 @@ void Application::checkAndReconnect() {
                           "/?token=test&peerType=camera";
        
        setState(State::CONNECTING);
+       lastReconnectTime_ = now;
+       
        if (wsClient_->connect(wsUrl)) {
            // 연결 성공은 콜백에서 처리
            LOG_INFO("WebSocket connection initiated");
        } else {
            reconnectAttempts_++;
            stats_.reconnectCount++;
-           lastReconnectTime_ = now;
            LOG_ERROR("Failed to initiate reconnection");
        }
    }
@@ -827,7 +948,7 @@ GstPadProbeReturn Application::processVideoFrame(int cameraIndex, GstBuffer* buf
 
     // 10초마다 프레임 카운트 로그
     if (frameCount[cameraIndex] % 300 == 0) {
-        LOG_TRACE("Camera {} processed {} frames", cameraIndex, frameCount[cameraIndex]);
+        LOG_INFO("Camera {} processed {} frames", cameraIndex, frameCount[cameraIndex]);
     }
 
     NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta(buffer);

@@ -97,19 +97,18 @@ bool WebRTCManager::removePeer(const std::string& peerId) {
 }
 
 void WebRTCManager::removeAllPeers() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    LOG_INFO("Removing all {} peers", peers_.size());
+    LOG_INFO("Removing all peers");
     
     // 복사본을 만들어서 순회 (iterator 무효화 방지)
     std::vector<std::string> peerIds;
-    for (const auto& [peerId, context] : peers_) {
-        peerIds.push_back(peerId);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& [peerId, context] : peers_) {
+            peerIds.push_back(peerId);
+        }
     }
     
-    // unlock 후 제거 (데드락 방지)
-    lock.unlock();
-    
+    // 각 peer 제거
     for (const auto& peerId : peerIds) {
         removePeer(peerId);
     }
