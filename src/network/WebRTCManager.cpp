@@ -25,44 +25,39 @@ bool WebRTCManager::addPeer(const std::string& peerId, const std::string& source
     auto context = std::make_unique<PeerContext>();
     context->info.peerId = peerId;
     context->info.device = parseSource(source);
-    context->info.streamType = parseStreamType(source);
+    context->info.streamType = parseStreamType(source);  // 스트림 타입도 파싱
     context->info.connectedTime = std::chrono::steady_clock::now();
     context->info.state = WebRTCPeer::State::NEW;
-    
-    // 동적 스트림 추가 - 개선된 방식 사용
-    auto port = pipeline_->addDynamicStream(peerId, context->info.device, context->info.streamType);
-    if (!port.has_value()) {
-        LOG_ERROR("Failed to add dynamic stream to pipeline");
-        return false;
-    }
-    
-    context->streamPort = port.value();
-    LOG_INFO("Allocated port {} for peer {}", context->streamPort, peerId);
     
     // WebRTC peer 생성
     WebRTCPeer::Config peerConfig;
     peerConfig.peerId = peerId;
-    // STUN/TURN 서버 설정
-    peerConfig.stunServer = "stun://stun.l.google.com:19302";
+    // STUN/TURN 서버 설정은 전역 설정에서 가져옴
     
     context->peer = std::make_unique<WebRTCPeer>(peerConfig);
     
     // 콜백 설정
     setupPeerCallbacks(context.get());
     
-    // UDP source 생성 및 WebRTC 연결
-    if (!createPeerConnection(peerId, source)) {
-        pipeline_->removeDynamicStream(peerId);
+    // Pipeline에 스트림 추가
+    if (!pipeline_->addStream(peerId, context->info.device, context->info.streamType)) {
+        LOG_ERROR("Failed to add stream to pipeline");
         return false;
     }
     
-    // Peer 저장
+    // ✅ Peer를 먼저 저장 (createPeerConnection 호출 전에!)
     peers_[peerId] = std::move(context);
     
-    // Offer 생성 시작
-    peers_[peerId]->peer->createOffer();
+    // UDP source 생성 및 연결
+    if (!createPeerConnection(peerId, source)) {
+        LOG_ERROR("Failed to create peer connection for: {}", peerId);
+        // 실패 시 정리
+        pipeline_->removeStream(peerId);
+        peers_.erase(peerId);  // 추가했던 peer 제거
+        return false;
+    }
     
-    LOG_INFO("Peer added successfully: {} (total peers: {})", peerId, peers_.size());
+    LOG_INFO("Peer added successfully: {}", peerId);
     return true;
 }
 
@@ -114,48 +109,69 @@ void WebRTCManager::removeAllPeers() {
     }
 }
 
-bool WebRTCManager::createPeerConnection(const std::string& peerId, const std::string& source) {
+bool WebRTCManager::createPeerConnection(const std::string& peerId, 
+                                        const std::string& source) {
     auto it = peers_.find(peerId);
     if (it == peers_.end()) {
+        LOG_ERROR("Peer not found: {}", peerId);
         return false;
     }
     
     auto& context = it->second;
     
-    // UDP 소스 생성 (동적으로 할당된 포트 사용)
+    // 스트림 정보 가져오기 - peerId로 먼저 시도
+    auto streamInfo = pipeline_->getStreamInfo(peerId);
+    
+    // peerId로 찾을 수 없으면 device와 type으로 찾기
+    if (!streamInfo.has_value()) {
+        streamInfo = pipeline_->getStreamInfo(context->info.device, context->info.streamType);
+    }
+    
+    if (!streamInfo.has_value() || streamInfo->port <= 0) {
+        LOG_ERROR("Failed to get valid stream info for peer: {}", peerId);
+        return false;
+    }
+    
+    context->streamPort = streamInfo->port;
+    
+    // UDP 소스 생성
     context->udpSrc = gst_element_factory_make("udpsrc", nullptr);
     if (!context->udpSrc) {
         LOG_ERROR("Failed to create UDP source");
         return false;
     }
     
-    // RTP caps 설정 (코덱에 따라 다르게)
-    std::string caps;
-    if (source.find("H264") != std::string::npos) {
-        caps = "application/x-rtp,media=video,encoding-name=H264,payload=96";
-    } else if (source.find("VP8") != std::string::npos) {
-        caps = "application/x-rtp,media=video,encoding-name=VP8,payload=96";
-    } else {
-        // 기본값: H264
-        caps = "application/x-rtp,media=video,encoding-name=H264,payload=96";
+    // RTP 캡슐화 확인
+    std::string caps_str = "application/x-rtp,media=video,encoding-name=H264,payload=96";
+    if (source.find("VP8") != std::string::npos) {
+        caps_str = "application/x-rtp,media=video,encoding-name=VP8,payload=96";
+    } else if (source.find("VP9") != std::string::npos) {
+        caps_str = "application/x-rtp,media=video,encoding-name=VP9,payload=96";
     }
+    
+    GstCaps* caps = gst_caps_from_string(caps_str.c_str());
     
     // UDP 소스 설정
     g_object_set(context->udpSrc, 
                  "port", context->streamPort,
-                 "caps", gst_caps_from_string(caps.c_str()),
+                 "caps", caps,
+                 "buffer-size", 2097152,  // 2MB
                  nullptr);
     
-    LOG_DEBUG("Created UDP source on port {} with caps: {}", context->streamPort, caps);
+    gst_caps_unref(caps);
     
-    // WebRTC peer에 스트림 연결
+    LOG_DEBUG("Created UDP source on port {} with caps: {}", 
+              context->streamPort, caps_str);
+    
+    // WebRTC peer에 연결
     if (!context->peer->connectToStream(context->udpSrc)) {
-        LOG_ERROR("Failed to connect stream to WebRTC peer");
+        LOG_ERROR("Failed to connect WebRTC peer to stream");
         gst_object_unref(context->udpSrc);
         context->udpSrc = nullptr;
         return false;
     }
     
+    LOG_INFO("Created peer connection for {} on port {}", peerId, context->streamPort);
     return true;
 }
 
@@ -287,10 +303,15 @@ void WebRTCManager::onError(const std::string& peerId, const std::string& error)
     removePeer(peerId);
 }
 
-CameraDevice WebRTCManager::parseSource(const std::string& source) const {
-    if (source.find("RGB") != std::string::npos || source.find("rgb") != std::string::npos) {
+CameraDevice WebRTCManager::parseSource(const std::string& source) {
+    // 소스 문자열에서 디바이스 타입 파싱
+    if (source.find("RGB") != std::string::npos || 
+        source.find("rgb") != std::string::npos ||
+        source == "0") {  // video0
         return CameraDevice::RGB;
-    } else if (source.find("Thermal") != std::string::npos || source.find("thermal") != std::string::npos) {
+    } else if (source.find("Thermal") != std::string::npos || 
+               source.find("thermal") != std::string::npos ||
+               source == "1") {  // video1
         return CameraDevice::THERMAL;
     }
     
@@ -298,13 +319,15 @@ CameraDevice WebRTCManager::parseSource(const std::string& source) const {
     return CameraDevice::RGB;
 }
 
-StreamType WebRTCManager::parseStreamType(const std::string& source) const {
+StreamType WebRTCManager::parseStreamType(const std::string& source) {
+    // 소스 문자열에서 스트림 타입 파싱
     if (source.find("sub") != std::string::npos || 
         source.find("secondary") != std::string::npos ||
-        source.find("Sub") != std::string::npos) {
+        source.find("enc2") != std::string::npos) {
         return StreamType::SECONDARY;
     }
     
+    // 기본값은 MAIN
     return StreamType::MAIN;
 }
 

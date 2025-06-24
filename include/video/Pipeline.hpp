@@ -37,6 +37,15 @@ enum class StreamType : int {
 
 class Pipeline {
 public:
+    struct StreamInfo {
+        std::string peerId;
+        CameraDevice device;
+        StreamType type;
+        int port;
+        bool active;
+        GstElement* udpsink;
+    };
+
     struct PipelineConfig {
         Config::WebRTCConfig webrtcConfig;
         std::string snapshotPath = "/tmp/snapshots";
@@ -98,6 +107,8 @@ public:
     };
     
     Statistics getStatistics(CameraDevice device) const;
+    std::optional<StreamInfo> getStreamInfo(const std::string& peerId) const;
+    std::optional<StreamInfo> getStreamInfo(CameraDevice device, StreamType type) const;
 
 private:
     struct Impl;

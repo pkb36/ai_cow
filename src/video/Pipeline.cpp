@@ -7,6 +7,12 @@
 #include <atomic>
 #include <sstream>
 
+enum ProcessType {
+    SENDER = 0,
+    RECORDER = 1,
+    EVENT_RECORDER = 2
+};
+
 struct Pipeline::Impl {
     GstPtr<GstElement> pipeline;
     PipelineConfig config;
@@ -32,6 +38,7 @@ struct Pipeline::Impl {
     
     // 헬퍼 함수들
     std::string buildPipelineString();
+    void initializeStreams();
     bool setupOsdProbes();
     bool registerElements();
     int allocatePort();
@@ -43,6 +50,36 @@ struct Pipeline::Impl {
     static GstPadProbeReturn universalProbeCallback(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
     static gboolean busCallback(GstBus* bus, GstMessage* message, gpointer userData);
 };
+
+int get_udp_port(ProcessType process, CameraDevice device, StreamType stream, int index) {
+    // config에서 가져온 값들 (예시)
+    const int stream_base_port = 5000;  // config.streamBasePort
+    const int max_stream_cnt = 10;      // config.maxStreamCount
+    
+    int port = stream_base_port;
+    
+    switch (process) {
+        case SENDER:
+            port += index;
+            break;
+        case RECORDER:
+            port += max_stream_cnt;
+            break;
+        case EVENT_RECORDER:
+            port += max_stream_cnt + 1;
+            break;
+    }
+    
+    // 디바이스별 오프셋
+    port += static_cast<int>(device);
+    
+    // 스트림 타입별 오프셋 (SECOND_STREAM은 +100)
+    if (stream == StreamType::SECONDARY) {
+        port += 100;
+    }
+    
+    return port;
+}
 
 Pipeline::Pipeline() : impl_(std::make_unique<Impl>()) {
     LOG_TRACE("Pipeline created");
@@ -100,6 +137,41 @@ bool Pipeline::create(const PipelineConfig& config) {
     
     LOG_INFO("Pipeline created successfully");
     return true;
+}
+
+void Pipeline::Impl::initializeStreams() {
+    std::lock_guard<std::mutex> lock(streamMutex);
+    
+    streams.clear();
+    streams.reserve(config.maxStreamCount * config.cameras.size() * 2);
+    
+    // 모든 가능한 스트림 슬롯 초기화
+    for (size_t streamIdx = 0; streamIdx < config.maxStreamCount; ++streamIdx) {
+        for (size_t camIdx = 0; camIdx < config.cameras.size(); ++camIdx) {
+            for (int streamType = 0; streamType < 2; ++streamType) {
+                StreamInfo info;
+                info.device = static_cast<CameraDevice>(camIdx);
+                info.type = static_cast<StreamType>(streamType);
+                
+                // gstream_main.c와 동일한 포트 계산 로직 사용
+                info.port = get_udp_port(SENDER, info.device, info.type, streamIdx);
+                
+                info.active = false;
+                info.udpsink = nullptr;
+                
+                // UDP sink element 이름 생성
+                std::string sinkName = "udpsink_" + std::to_string(camIdx) + "_" + 
+                                     std::to_string(streamType) + "_" + std::to_string(streamIdx);
+                
+                streams.push_back(info);
+                
+                LOG_TRACE("Initialized stream slot {} for device {} type {} on port {}", 
+                         streamIdx, camIdx, streamType, info.port);
+            }
+        }
+    }
+    
+    LOG_INFO("Initialized {} stream slots", streams.size());
 }
 
 std::string Pipeline::Impl::buildPipelineString() {
@@ -769,4 +841,48 @@ gboolean Pipeline::Impl::busCallback(GstBus*, GstMessage* message, gpointer user
     }
     
     return TRUE;
+}
+
+std::optional<Pipeline::StreamInfo> Pipeline::getStreamInfo(const std::string& peerId) const {
+    std::lock_guard<std::mutex> lock(impl_->streamMutex);
+    
+    auto it = std::find_if(impl_->streams.begin(), impl_->streams.end(),
+        [&](const auto& stream) {
+            return stream.peerId == peerId && stream.active;
+        });
+    
+    if (it != impl_->streams.end()) {
+        return *it;
+    }
+    
+    return std::nullopt;
+}
+
+std::optional<Pipeline::StreamInfo> Pipeline::getStreamInfo(CameraDevice device, StreamType type) const {
+    std::lock_guard<std::mutex> lock(impl_->streamMutex);
+    
+    // 활성화된 스트림 중에서 찾기
+    auto it = std::find_if(impl_->streams.begin(), impl_->streams.end(),
+        [&](const auto& stream) {
+            return stream.device == device && 
+                   stream.type == type && 
+                   stream.active;
+        });
+    
+    if (it != impl_->streams.end()) {
+        return *it;
+    }
+    
+    // 활성화되지 않은 스트림 중에서 찾기 (포트 정보만 필요한 경우)
+    it = std::find_if(impl_->streams.begin(), impl_->streams.end(),
+        [&](const auto& stream) {
+            return stream.device == device && 
+                   stream.type == type;
+        });
+    
+    if (it != impl_->streams.end()) {
+        return *it;
+    }
+    
+    return std::nullopt;
 }
