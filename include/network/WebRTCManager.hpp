@@ -67,7 +67,8 @@ private:
     bool createPeerConnection(const std::string& peerId, const std::string& source);
     void setupPeerCallbacks(PeerContext* context);
     CameraDevice parseSource(const std::string& source) const;
-    
+    StreamType parseStreamType(const std::string& source) const;
+    void logConnectionStats() const;
     // WebRTC 콜백 핸들러들
     void onIceCandidate(const std::string& peerId, const std::string& candidate, int mlineIndex);
     void onOfferCreated(const std::string& peerId, const std::string& sdp);

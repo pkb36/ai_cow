@@ -11,7 +11,6 @@
 #include <gst/gstpad.h>
 #include "core/Config.hpp"
 
-// GStreamer 객체를 위한 커스텀 삭제자
 template<typename T>
 struct GstDeleter {
     void operator()(T* ptr) const {
@@ -36,28 +35,24 @@ enum class StreamType : int {
 
 class Pipeline {
 public:
-    struct CameraInfo {
-        CameraDevice device;
-        std::string description;
-    };
-
     struct PipelineConfig {
         Config::WebRTCConfig webrtcConfig;
         std::string snapshotPath = "/tmp/snapshots";
         int maxStreamCount = 10;
         int basePort = 5000;
-        std::vector<CameraInfo> cameras;  // cameras 필드 추가
+        int cameras = 2;
     };
 
+    // 동적 스트림 정보
     struct DynamicStreamInfo {
         std::string peerId;
         CameraDevice device;
         StreamType type;
         int port;
+        GstElement* teepad = nullptr;
         GstElement* queue = nullptr;
         GstElement* udpsink = nullptr;
-        GstPad* teeSrcPad = nullptr;
-        GstPad* queueSinkPad = nullptr;
+        bool active = false;
     };
 
     Pipeline();
@@ -71,6 +66,11 @@ public:
 
     // 엘리먼트 접근
     GstElement* getElement(const std::string& name);
+
+    std::optional<int> addDynamicStream(const std::string& peerId, CameraDevice device, StreamType type);
+    bool removeDynamicStream(const std::string& peerId);
+    std::optional<DynamicStreamInfo> getDynamicStreamInfo(const std::string& peerId) const;
+    std::vector<std::string> getActivePeerIds() const;
     
     // 동적 스트림 추가/제거
     bool addStream(const std::string& peerId, CameraDevice device, StreamType type);
@@ -96,11 +96,6 @@ public:
     };
     
     Statistics getStatistics(CameraDevice device) const;
-
-    std::optional<int> addDynamicStream(const std::string& peerId, CameraDevice device, StreamType type);
-    bool removeDynamicStream(const std::string& peerId);
-    std::optional<DynamicStreamInfo> getDynamicStreamInfo(const std::string& peerId) const;
-    std::vector<std::string> getActivePeerIds() const;
 
 private:
     struct Impl;
