@@ -6,6 +6,7 @@
 #include <functional>
 #include <unordered_map>
 #include <optional>
+#include <set>
 #include <gst/gst.h>
 #include <gst/gstpad.h>
 #include "core/Config.hpp"
@@ -48,6 +49,17 @@ public:
         std::vector<CameraInfo> cameras;  // cameras 필드 추가
     };
 
+    struct DynamicStreamInfo {
+        std::string peerId;
+        CameraDevice device;
+        StreamType type;
+        int port;
+        GstElement* queue = nullptr;
+        GstElement* udpsink = nullptr;
+        GstPad* teeSrcPad = nullptr;
+        GstPad* queueSinkPad = nullptr;
+    };
+
     Pipeline();
     ~Pipeline();
 
@@ -84,6 +96,11 @@ public:
     };
     
     Statistics getStatistics(CameraDevice device) const;
+
+    std::optional<int> addDynamicStream(const std::string& peerId, CameraDevice device, StreamType type);
+    bool removeDynamicStream(const std::string& peerId);
+    std::optional<DynamicStreamInfo> getDynamicStreamInfo(const std::string& peerId) const;
+    std::vector<std::string> getActivePeerIds() const;
 
 private:
     struct Impl;

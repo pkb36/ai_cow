@@ -1,0 +1,37 @@
+{
+    "camera_id": "ITC100A-23081001",
+    "comm_socket_port": 6000,
+    "max_stream_cnt": 10,
+    "stream_base_port": 5000,
+    "device_cnt": 2,
+    "snapshot_path": "/home/nvidia/webrtc",
+    "video0":{"src":"v4l2src device=/dev/video0 ! nvvideoconvert flip-method=2 ! clockoverlay time-format=\"%D %H:%M:%S\" font-desc=\"Arial, 18\" ! videorate ! video/x-raw,width=1920,height=1080,framerate=10/1 ! queue max-size-buffers=5 leaky=downstream ! tee name=video_src_tee0 ",
+			"record":"video_src_tee0. ! queue ! nvvideoconvert ! nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=2000000 ! rtph264pay pt=96 config-interval=1 ! queue ! udpsink host=127.0.0.1 port=7000 sync=false",
+			"infer": "video_src_tee0. ! queue ! videoscale ! video/x-raw,width=1280,height=720 ! nvvideoconvert ! RGB.sink_0 nvstreammux name=RGB batch-size=1 width=1280 height=720 live-source=1 ! nvinfer config-file-path=RGB_yoloV7.txt name=nvinfer_1 ! nvtracker ll-lib-file=/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so ll-config-file=/home/nvidia/webrtc/tracker_config.yml ! nvvideoconvert ! nvdsosd name=nvosd_1 ! nvvideoconvert ! video/x-raw,width=1920,height=1080 ! ",
+            "enc":"nvvideoconvert ! nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=2000000 ! rtph264pay pt=96 config-interval=1 ! queue max-size-buffers=5 ! ",
+			"enc2":"video_src_tee0. ! queue ! videorate ! video/x-raw,framerate=5/1 ! videoscale ! video/x-raw,width=1280,height=720 ! nvvideoconvert ! nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=1000000 ! rtph264pay pt=96 config-interval=1 ! queue ! ",
+            "snapshot":"video_src_tee0. ! queue ! videoscale ! videorate ! video/x-raw,width=320,height=180,framerate=1/2 ! jpegenc ! multifilesink post-messages=true " },
+
+    "video1":{"src":"v4l2src device=/dev/video2 ! videocrop bottom=2 ! clockoverlay time-format=\"%D %H:%M:%S\" font-desc=\"Arial, 18\" ! videorate ! video/x-raw,framerate=10/1 ! queue max-size-buffers=5 leaky=downstream ! tee name=video_src_tee1 ",
+                "record": "video_src_tee1. ! queue ! nvvideoconvert ! nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=1000000 ! rtph264pay pt=96 config-interval=1 ! queue ! udpsink host=127.0.0.1 port=7001 sync=false",
+				"infer": "video_src_tee1. ! queue ! videoscale ! video/x-raw,width=640,height=480 ! nvvideoconvert ! thermal.sink_0 nvstreammux name=thermal batch-size=1 width=640 height=480 live-source=1 ! nvinfer config-file-path=Thermal_yoloV7.txt name=nvinfer_2 ! nvtracker ll-lib-file=/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so ll-config-file=/home/nvidia/webrtc/tracker_config.yml ! nvvideoconvert ! nvdsosd name=nvosd_2 ! nvvideoconvert ! video/x-raw,width=384,height=288 ! ",
+                "enc":"nvvideoconvert ! nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=4000000 ! rtph264pay pt=96 config-interval=1 ! queue max-size-buffers=5 ! ",
+                "enc2":"video_src_tee1. ! queue ! videorate ! video/x-raw,framerate=5/1 ! videoscale ! video/x-raw,width=384,height=240 ! nvvideoconvert ! nvv4l2h264enc preset-level=FastPreset idrinterval=5 bitrate=24000 ! rtph264pay pt=96 config-interval=1 ! queue ! ",
+				"snapshot":"video_src_tee1. ! queue ! videoscale ! videorate ! video/x-raw,width=320,height=240,framerate=1/2 ! jpegenc ! multifilesink post-messages=true " },
+    "status_timer_interval": 5000,
+    "tty": {
+        "name": "/dev/ttyTHS0",
+        "baudrate": 38400
+    },
+    "server_ip": "ws://52.194.238.184",
+    "event_user_id": "itechour",
+    "event_user_pw": "12341234",
+    "event_server_ip": "52.194.238.184",
+    "device_setting_path": "/home/nvidia/webrtc/device_setting.json",
+    "event_record_enc_index": 0,
+    "record_path": "/home/nvidia/data",
+    "record_duration": 5,
+    "record_enc_index": 1,
+    "http_service_port": "9615",
+    "event_buf_time": 15
+}

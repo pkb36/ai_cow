@@ -13,7 +13,7 @@ struct Pipeline::Impl {
     std::unordered_map<std::string, gulong> probeIds;
     std::unordered_map<std::string, ProbeCallback> probeCallbacks;
     
-    // 스트림 관리
+    // 기존 스트림 관리 (제거 예정)
     struct StreamInfo {
         std::string peerId;
         CameraDevice device;
@@ -24,6 +24,11 @@ struct Pipeline::Impl {
     };
     std::vector<StreamInfo> streams;
     std::mutex streamMutex;
+    
+    // 동적 스트림 관리 - 새로 추가
+    std::unordered_map<std::string, DynamicStreamInfo> dynamicStreams;
+    std::mutex dynamicStreamMutex;
+    std::set<int> usedDynamicPorts;
     
     // 통계
     mutable std::mutex statsMutex;
@@ -37,8 +42,12 @@ struct Pipeline::Impl {
     std::string buildPipelineString();
     bool setupOsdProbes();
     bool registerElements();
-    int getNextAvailablePort(CameraDevice device, StreamType type);
     void initializeStreams();
+    
+    // 동적 스트림 관련 - 새로 추가
+    int allocateDynamicPort();
+    void releaseDynamicPort(int port);
+    GstElement* getTeeElement(CameraDevice device, StreamType type);
     
     // 정적 콜백
     static GstPadProbeReturn universalProbeCallback(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
@@ -230,7 +239,6 @@ GstElement* Pipeline::getElement(const std::string& name) {
     return nullptr;
 }
 
-// Pipeline::Impl::buildPipelineString() 메서드만 수정
 std::string Pipeline::Impl::buildPipelineString() {
     const auto& webrtcConfig = config.webrtcConfig;
     std::stringstream ss;
@@ -245,42 +253,48 @@ std::string Pipeline::Impl::buildPipelineString() {
         // 2. 녹화 브랜치 (UDP로 출력)
         ss << video.record << " ";
         
-        // 3. 추론 브랜치
+        // 3. 추론 브랜치 - dspostproc 제거하고 nvtracker로 대체
         if (!video.infer.empty()) {
-            ss << video.infer << " ";
+            std::string inferStr = video.infer;
+            
+            // dspostproc 관련 부분 제거
+            size_t dspostprocPos = inferStr.find("dspostproc");
+            if (dspostprocPos != std::string::npos) {
+                // dspostproc name=dspostproc_X ! 부분을 찾아서 제거
+                size_t endPos = inferStr.find("!", dspostprocPos);
+                if (endPos != std::string::npos) {
+                    // dspostproc 엘리먼트 전체를 nvtracker로 대체
+                    std::string trackerStr = "nvtracker ll-lib-file=/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so ll-config-file=/home/nvidia/webrtc/tracker_config.yml !";
+                    inferStr.replace(dspostprocPos, endPos - dspostprocPos + 1, trackerStr);
+                }
+            }
+            
+            // nvof 제거 (옵션)
+            size_t nvofPos = inferStr.find("nvof");
+            if (nvofPos != std::string::npos) {
+                size_t nvofEndPos = inferStr.find("!", nvofPos);
+                if (nvofEndPos != std::string::npos) {
+                    inferStr.erase(nvofPos, nvofEndPos - nvofPos + 1);
+                }
+            }
+            
+            ss << inferStr << " ";
         }
         
-        // 4. 메인 인코더 브랜치를 위한 tee
-        ss << "tee name=enc_tee_" << i << " ";
+        // 4. 동적 스트리밍을 위한 tee (allow-not-linked 추가)
+        ss << "tee name=dynamic_tee_main_" << i << " allow-not-linked=true ";
         
-        // 5. 메인 인코더 (고품질)
-        ss << "enc_tee_" << i << ". ! queue ! " << video.enc;
-        ss << "tee name=stream_tee1_" << i << " ";
+        // 5. 메인 인코더 브랜치
+        ss << "dynamic_tee_main_" << i << ". ! queue max-size-buffers=10 leaky=downstream ! " << video.enc;
+        ss << "tee name=dynamic_tee_main_enc_" << i << " allow-not-linked=true ";
         
-        // 6. 서브 인코더 (저품질)
-        ss << video.enc2;
-        ss << "tee name=stream_tee2_" << i << " ";
+        // 6. 서브 인코더 브랜치
+        ss << "dynamic_tee_main_" << i << ". ! queue max-size-buffers=10 leaky=downstream ! " << video.enc2;
+        ss << "tee name=dynamic_tee_sub_enc_" << i << " allow-not-linked=true ";
         
         // 7. 스냅샷 브랜치
-        ss << video.snapshot;
+        ss << "dynamic_tee_main_" << i << ". ! queue ! " << video.snapshot;
         ss << "location=" << webrtcConfig.snapshotPath << "/cam" << i << "_snapshot.jpg ";
-    }
-    
-    // UDP 싱크 추가 (WebRTC 스트리밍용)
-    for (int streamIdx = 0; streamIdx < config.maxStreamCount; ++streamIdx) {
-        for (int camIdx = 0; camIdx < webrtcConfig.deviceCnt && camIdx < 2; ++camIdx) {
-            // 메인 스트림
-            int port = config.basePort + (streamIdx * 100) + (camIdx * 2);
-            ss << "stream_tee1_" << camIdx << ". ! queue ! "
-               << "udpsink host=127.0.0.1 port=" << port 
-               << " sync=false async=false name=udpsink_" << camIdx << "_0_" << streamIdx << " ";
-            
-            // 서브 스트림
-            port++;
-            ss << "stream_tee2_" << camIdx << ". ! queue ! "
-               << "udpsink host=127.0.0.1 port=" << port 
-               << " sync=false async=false name=udpsink_" << camIdx << "_1_" << streamIdx << " ";
-        }
     }
     
     return ss.str();
@@ -522,16 +536,6 @@ bool Pipeline::removeStream(const std::string& peerId) {
     return removed;
 }
 
-// 포트 할당
-int Pipeline::Impl::getNextAvailablePort(CameraDevice device, StreamType type) {
-    for (const auto& stream : streams) {
-        if (!stream.active && stream.device == device && stream.type == type) {
-            return stream.port;
-        }
-    }
-    return -1;
-}
-
 // 상태 조회
 GstState Pipeline::getState() const {
     if (!impl_->pipeline) {
@@ -621,4 +625,274 @@ gboolean Pipeline::Impl::busCallback(GstBus* bus, GstMessage* message, gpointer 
     }
     
     return TRUE;
+}
+
+// 동적 포트 할당
+int Pipeline::Impl::allocateDynamicPort() {
+    // 동적 스트림용 포트 범위: 8000-9000
+    for (int port = 8000; port < 9000; ++port) {
+        if (usedDynamicPorts.find(port) == usedDynamicPorts.end()) {
+            usedDynamicPorts.insert(port);
+            return port;
+        }
+    }
+    return -1;
+}
+
+void Pipeline::Impl::releaseDynamicPort(int port) {
+    usedDynamicPorts.erase(port);
+}
+
+// Tee 엘리먼트 찾기
+GstElement* Pipeline::Impl::getTeeElement(CameraDevice device, StreamType type) {
+    std::string teeName;
+    if (type == StreamType::MAIN) {
+        teeName = "dynamic_tee_main_enc_" + std::to_string(static_cast<int>(device));
+    } else {
+        teeName = "dynamic_tee_sub_enc_" + std::to_string(static_cast<int>(device));
+    }
+    
+    return gst_bin_get_by_name(GST_BIN(pipeline.get()), teeName.c_str());
+}
+
+// 동적 스트림 추가
+std::optional<int> Pipeline::addDynamicStream(const std::string& peerId, 
+                                             CameraDevice device, 
+                                             StreamType type) {
+    std::lock_guard<std::mutex> lock(impl_->dynamicStreamMutex);
+    
+    // 이미 존재하는지 확인
+    if (impl_->dynamicStreams.find(peerId) != impl_->dynamicStreams.end()) {
+        LOG_WARNING("Dynamic stream already exists for peer: {}", peerId);
+        return std::nullopt;
+    }
+    
+    LOG_INFO("Adding dynamic stream for peer: {} (device: {}, type: {})", 
+             peerId, static_cast<int>(device), static_cast<int>(type));
+    
+    // Tee 엘리먼트 찾기
+    GstElement* tee = impl_->getTeeElement(device, type);
+    if (!tee) {
+        LOG_ERROR("Tee element not found for device {} type {}", 
+                 static_cast<int>(device), static_cast<int>(type));
+        return std::nullopt;
+    }
+    
+    DynamicStreamInfo streamInfo;
+    streamInfo.peerId = peerId;
+    streamInfo.device = device;
+    streamInfo.type = type;
+    streamInfo.port = impl_->allocateDynamicPort();
+    
+    if (streamInfo.port < 0) {
+        LOG_ERROR("Failed to allocate port for dynamic stream");
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    // Queue 생성
+    std::string queueName = "queue_" + peerId;
+    streamInfo.queue = gst_element_factory_make("queue", queueName.c_str());
+    if (!streamInfo.queue) {
+        LOG_ERROR("Failed to create queue element");
+        impl_->releaseDynamicPort(streamInfo.port);
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    g_object_set(streamInfo.queue,
+                 "max-size-buffers", 10,
+                 "max-size-bytes", 0,
+                 "max-size-time", 0,
+                 "leaky", 2, // downstream
+                 nullptr);
+    
+    // UDP sink 생성
+    std::string sinkName = "udpsink_" + peerId;
+    streamInfo.udpsink = gst_element_factory_make("udpsink", sinkName.c_str());
+    if (!streamInfo.udpsink) {
+        LOG_ERROR("Failed to create udpsink element");
+        gst_object_unref(streamInfo.queue);
+        impl_->releaseDynamicPort(streamInfo.port);
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    g_object_set(streamInfo.udpsink,
+                 "host", "127.0.0.1",
+                 "port", streamInfo.port,
+                 "sync", FALSE,
+                 "async", FALSE,
+                 nullptr);
+    
+    // 파이프라인에 추가
+    if (!gst_bin_add(GST_BIN(impl_->pipeline.get()), streamInfo.queue)) {
+        LOG_ERROR("Failed to add queue to pipeline");
+        gst_object_unref(streamInfo.queue);
+        gst_object_unref(streamInfo.udpsink);
+        impl_->releaseDynamicPort(streamInfo.port);
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    if (!gst_bin_add(GST_BIN(impl_->pipeline.get()), streamInfo.udpsink)) {
+        LOG_ERROR("Failed to add udpsink to pipeline");
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.queue);
+        gst_object_unref(streamInfo.queue);
+        gst_object_unref(streamInfo.udpsink);
+        impl_->releaseDynamicPort(streamInfo.port);
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    // Queue와 UDP sink 연결
+    if (!gst_element_link(streamInfo.queue, streamInfo.udpsink)) {
+        LOG_ERROR("Failed to link queue to udpsink");
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.queue);
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.udpsink);
+        gst_object_unref(streamInfo.queue);
+        gst_object_unref(streamInfo.udpsink);
+        impl_->releaseDynamicPort(streamInfo.port);
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    // Tee에서 새 패드 요청
+    GstPadTemplate* padTemplate = gst_element_class_get_pad_template(
+        GST_ELEMENT_GET_CLASS(tee), "src_%u");
+    streamInfo.teeSrcPad = gst_element_request_pad(tee, padTemplate, nullptr, nullptr);
+    
+    if (!streamInfo.teeSrcPad) {
+        LOG_ERROR("Failed to request pad from tee");
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.queue);
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.udpsink);
+        impl_->releaseDynamicPort(streamInfo.port);
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    // Queue의 sink 패드 가져오기
+    streamInfo.queueSinkPad = gst_element_get_static_pad(streamInfo.queue, "sink");
+    
+    // 패드 연결
+    GstPadLinkReturn linkRet = gst_pad_link(streamInfo.teeSrcPad, streamInfo.queueSinkPad);
+    if (linkRet != GST_PAD_LINK_OK) {
+        LOG_ERROR("Failed to link tee to queue: {}", linkRet);
+        gst_element_release_request_pad(tee, streamInfo.teeSrcPad);
+        gst_object_unref(streamInfo.teeSrcPad);
+        gst_object_unref(streamInfo.queueSinkPad);
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.queue);
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.udpsink);
+        impl_->releaseDynamicPort(streamInfo.port);
+        gst_object_unref(tee);
+        return std::nullopt;
+    }
+    
+    // 엘리먼트 상태 동기화
+    gst_element_sync_state_with_parent(streamInfo.queue);
+    gst_element_sync_state_with_parent(streamInfo.udpsink);
+    
+    // 정보 저장
+    impl_->dynamicStreams[peerId] = streamInfo;
+    
+    gst_object_unref(tee);
+    
+    LOG_INFO("Successfully added dynamic stream for peer {} on port {}", 
+             peerId, streamInfo.port);
+    
+    return streamInfo.port;
+}
+
+// 동적 스트림 제거
+bool Pipeline::removeDynamicStream(const std::string& peerId) {
+    std::lock_guard<std::mutex> lock(impl_->dynamicStreamMutex);
+    
+    auto it = impl_->dynamicStreams.find(peerId);
+    if (it == impl_->dynamicStreams.end()) {
+        LOG_WARNING("Dynamic stream not found for peer: {}", peerId);
+        return false;
+    }
+    
+    LOG_INFO("Removing dynamic stream for peer: {}", peerId);
+    
+    DynamicStreamInfo& streamInfo = it->second;
+    
+    // 1. EOS 이벤트 전송 (깨끗한 종료)
+    if (streamInfo.queueSinkPad) {
+        gst_pad_send_event(streamInfo.queueSinkPad, gst_event_new_eos());
+        // EOS 처리를 위한 짧은 대기
+        g_usleep(50000); // 50ms
+    }
+    
+    // 2. 패드 연결 해제
+    if (streamInfo.teeSrcPad && streamInfo.queueSinkPad) {
+        gst_pad_unlink(streamInfo.teeSrcPad, streamInfo.queueSinkPad);
+    }
+    
+    // 3. 엘리먼트 상태 변경
+    if (streamInfo.udpsink) {
+        gst_element_set_state(streamInfo.udpsink, GST_STATE_NULL);
+    }
+    if (streamInfo.queue) {
+        gst_element_set_state(streamInfo.queue, GST_STATE_NULL);
+    }
+    
+    // 4. 파이프라인에서 제거
+    if (streamInfo.udpsink) {
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.udpsink);
+    }
+    if (streamInfo.queue) {
+        gst_bin_remove(GST_BIN(impl_->pipeline.get()), streamInfo.queue);
+    }
+    
+    // 5. Tee 패드 해제
+    if (streamInfo.teeSrcPad) {
+        GstElement* tee = impl_->getTeeElement(streamInfo.device, streamInfo.type);
+        if (tee) {
+            gst_element_release_request_pad(tee, streamInfo.teeSrcPad);
+            gst_object_unref(tee);
+        }
+        gst_object_unref(streamInfo.teeSrcPad);
+    }
+    
+    // 6. Queue sink 패드 해제
+    if (streamInfo.queueSinkPad) {
+        gst_object_unref(streamInfo.queueSinkPad);
+    }
+    
+    // 7. 포트 해제
+    impl_->releaseDynamicPort(streamInfo.port);
+    
+    // 8. 맵에서 제거
+    impl_->dynamicStreams.erase(it);
+    
+    LOG_INFO("Successfully removed dynamic stream for peer: {}", peerId);
+    return true;
+}
+
+// 동적 스트림 정보 조회
+std::optional<Pipeline::DynamicStreamInfo> 
+Pipeline::getDynamicStreamInfo(const std::string& peerId) const {
+    std::lock_guard<std::mutex> lock(impl_->dynamicStreamMutex);
+    
+    auto it = impl_->dynamicStreams.find(peerId);
+    if (it != impl_->dynamicStreams.end()) {
+        return it->second;
+    }
+    
+    return std::nullopt;
+}
+
+// 활성 peer ID 목록
+std::vector<std::string> Pipeline::getActivePeerIds() const {
+    std::lock_guard<std::mutex> lock(impl_->dynamicStreamMutex);
+    
+    std::vector<std::string> peerIds;
+    peerIds.reserve(impl_->dynamicStreams.size());
+    
+    for (const auto& [peerId, info] : impl_->dynamicStreams) {
+        peerIds.push_back(peerId);
+    }
+    
+    return peerIds;
 }
