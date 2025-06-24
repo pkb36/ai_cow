@@ -1,4 +1,5 @@
 #include "network/WebSocketClient.hpp"
+#include "core/Application.hpp"
 #include "core/Logger.hpp"
 
 struct WebSocketClient::Impl {
@@ -27,23 +28,22 @@ bool WebSocketClient::connect(const std::string& url) {
 
     impl_->url = url;
     
-    // webrtc와 동일한 세션 설정 추가
+    // WebSocket 전용 세션 생성
     const char* https_aliases[] = {"wss", NULL};
     
     if (impl_->session) {
         g_object_unref(impl_->session);
     }
     
-    impl_->session = soup_session_new_with_options(
-        SOUP_SESSION_SSL_STRICT, FALSE,  // strict_ssl 설정
-        SOUP_SESSION_SSL_USE_SYSTEM_CA_FILE, TRUE,
-        SOUP_SESSION_HTTPS_ALIASES, https_aliases, 
-        NULL);
+    // 특정 컨텍스트를 사용하도록 설정
+    GMainContext* wsContext = Application::getInstance().getWebSocketContext();
     
-    // 로거 추가 (디버깅용)
-    SoupLogger* logger = soup_logger_new(SOUP_LOGGER_LOG_BODY, -1);
-    soup_session_add_feature(impl_->session, SOUP_SESSION_FEATURE(logger));
-    g_object_unref(logger);
+    impl_->session = soup_session_new_with_options(
+        SOUP_SESSION_SSL_STRICT, FALSE,
+        SOUP_SESSION_SSL_USE_SYSTEM_CA_FILE, TRUE,
+        SOUP_SESSION_HTTPS_ALIASES, https_aliases,
+        SOUP_SESSION_ASYNC_CONTEXT, wsContext,  // 중요: WebSocket 전용 컨텍스트 사용
+        NULL);
     
     SoupMessage* msg = soup_message_new(SOUP_METHOD_GET, url.c_str());
     if (!msg) {

@@ -115,7 +115,7 @@ public:
     // 컴포넌트 접근
     std::shared_ptr<Pipeline> getPipeline() { return pipeline_; }
     std::shared_ptr<WebRTCManager> getWebRTCManager() { return webrtcManager_; }
-
+    GMainContext* getWebSocketContext() { return wsContext_; }
 private:
     Application() = default;
     ~Application();
@@ -181,10 +181,14 @@ private:
     
     // 스레드
     std::thread heartbeatThread_;
-    
+    std::thread wsThread_;
+
+    void webSocketThread();
+
     // GLib 메인 루프
     GMainLoop* mainLoop_ = nullptr;
-    
+    GMainContext* wsContext_ = nullptr;
+
     // 설정
     std::string configPath_ = "config.json";
     std::string deviceSettingsPath_ = "device_settings.json";

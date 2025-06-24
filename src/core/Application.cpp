@@ -93,12 +93,17 @@ bool Application::initialize(int argc, char* argv[]) {
             return false;
         }
         
-        // 12. 메인 루프 생성
-        mainLoop_ = g_main_loop_new(nullptr, FALSE);
-        if (!mainLoop_) {
-            LOG_ERROR("Failed to create main loop");
+        // 12. 메인 루프 생성 - 별도의 컨텍스트 사용
+        wsContext_ = g_main_context_new();  // WebSocket 전용 컨텍스트
+        mainLoop_ = g_main_loop_new(nullptr, FALSE);  // 기본 컨텍스트
+        
+        if (!mainLoop_ || !wsContext_) {
+            LOG_ERROR("Failed to create main loop or context");
             return false;
         }
+        
+        // WebSocket 전용 스레드 시작
+        wsThread_ = std::thread(&Application::webSocketThread, this);
         
         setState(State::INITIALIZED);
         LOG_INFO("Application initialized successfully");
@@ -108,6 +113,27 @@ bool Application::initialize(int argc, char* argv[]) {
         LOG_ERROR("Exception during initialization: {}", e.what());
         return false;
     }
+}
+
+void Application::webSocketThread() {
+    LOG_INFO("WebSocket thread started");
+    
+    // 이 스레드에서 WebSocket 컨텍스트 사용
+    g_main_context_push_thread_default(wsContext_);
+    
+    // WebSocket 메인 루프
+    GMainLoop* wsLoop = g_main_loop_new(wsContext_, FALSE);
+    
+    while (running_) {
+        // 컨텍스트 이벤트 처리
+        g_main_context_iteration(wsContext_, FALSE);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    
+    g_main_loop_unref(wsLoop);
+    g_main_context_pop_thread_default(wsContext_);
+    
+    LOG_INFO("WebSocket thread ended");
 }
 
 bool Application::loadConfigurations() {

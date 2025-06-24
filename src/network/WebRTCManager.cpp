@@ -418,7 +418,6 @@ bool WebRTCManager::addPeerAsync(const std::string& peerId, const std::string& s
             return false;
         }
         
-        // 대기 중인 연결로 등록
         PendingConnection pending;
         pending.peerId = peerId;
         pending.source = source;
@@ -428,49 +427,42 @@ bool WebRTCManager::addPeerAsync(const std::string& peerId, const std::string& s
         pendingConnections_[peerId] = pending;
     }
     
-    // 비동기 작업 큐에 추가
-    asyncTasks_->enqueue([this, peerId, source]() {
-        LOG_INFO("Starting async peer connection: {}", peerId);
+    // 완전히 별도 스레드에서 처리
+    std::thread([this, peerId, source]() {
+        LOG_INFO("Starting async peer connection in detached thread: {}", peerId);
         
-        bool success = false;
         try {
-            // 1단계: 빠른 검증
-            if (peers_.find(peerId) != peers_.end()) {
-                LOG_WARNING("Peer {} already exists", peerId);
-                success = false;
-            } else {
-                // 2단계: 동기 연결 수행 (별도 스레드에서)
-                success = addPeerSync(peerId, source);
+            // GStreamer 작업을 위한 임시 컨텍스트
+            GMainContext* peerContext = g_main_context_new();
+            g_main_context_push_thread_default(peerContext);
+            
+            bool success = addPeerSync(peerId, source);
+            
+            g_main_context_pop_thread_default(peerContext);
+            g_main_context_unref(peerContext);
+            
+            // 결과 처리
+            {
+                std::lock_guard<std::mutex> lock(pendingMutex_);
+                auto it = pendingConnections_.find(peerId);
+                if (it != pendingConnections_.end()) {
+                    it->second.inProgress = false;
+                    if (success) {
+                        LOG_INFO("✅ Peer connection completed: {}", peerId);
+                        pendingConnections_.erase(it);
+                    } else {
+                        LOG_ERROR("❌ Peer connection failed: {}", peerId);
+                        pendingConnections_.erase(it);
+                    }
+                }
             }
             
         } catch (const std::exception& e) {
-            LOG_ERROR("Exception in async peer connection {}: {}", peerId, e.what());
-            success = false;
+            LOG_ERROR("Exception in peer connection thread {}: {}", peerId, e.what());
         }
-        
-        // 3단계: 연결 완료 처리
-        {
-            std::lock_guard<std::mutex> lock(pendingMutex_);
-            auto it = pendingConnections_.find(peerId);
-            if (it != pendingConnections_.end()) {
-                it->second.inProgress = false;
-                
-                if (success) {
-                    LOG_INFO("✅ Async peer connection completed: {}", peerId);
-                    pendingConnections_.erase(it);
-                } else {
-                    LOG_ERROR("❌ Async peer connection failed: {}", peerId);
-                    // 실패한 연결은 5초 후 정리
-                    std::this_thread::sleep_for(std::chrono::seconds(5));
-                    pendingConnections_.erase(it);
-                }
-            }
-        }
-        
-        return success;
-    });
+    }).detach();  // 스레드 분리
     
-    return true;  // 큐에 성공적으로 추가됨
+    return true;
 }
 
 bool WebRTCManager::addPeerSync(const std::string& peerId, const std::string& source) {
