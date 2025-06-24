@@ -76,7 +76,7 @@ bool WebRTCManager::removePeer(const std::string& peerId) {
     it->second->peer->disconnect();
     
     // 동적 스트림 제거
-    pipeline_->removeDynamicStream(peerId);
+    pipeline_->removeStream(peerId);
     
     // UDP source 정리
     if (it->second->udpSrc) {
