@@ -70,16 +70,10 @@ std::string MessageParser::serialize(const Message& message) {
             j["action"] = "offer";
             j["message"] = {
                 {"peer_id", msg.peerId},
-                {"sdp", {
-                    {"type", "offer"},
-                    {"sdp", msg.sdp}
-                }}
+                {"sdp", msg.sdp}  // JSON 객체 그대로 사용
             };
-            
-            LOG_DEBUG("Serialized offer message: {}", j.dump(2));
         },
         [&j](const IceCandidateMessage& msg) {
-            // 기존 코드와 동일한 형식
             j["peerType"] = "camera";
             j["action"] = "candidate";
             j["message"] = {
@@ -177,43 +171,53 @@ std::optional<PeerLeftMessage> MessageParser::parsePeerLeft(const nlohmann::json
 
 std::optional<AnswerMessage> MessageParser::parseAnswer(const nlohmann::json& j) {
     try {
-        if (!j.contains("message")) return std::nullopt;
+        if (!j.contains("message")) {
+            LOG_ERROR("No 'message' field in answer");
+            return std::nullopt;
+        }
 
         auto& msg = j["message"];
         AnswerMessage result;
 
+        // peer_id 파싱 - message 내부에 있음
         result.peerId = msg.value("peer_id", "");
         
-        // SDP가 객체 형태로 중첩되어 있는 경우 처리
+        // SDP 파싱 - message.sdp 내부에 있음
         if (msg.contains("sdp")) {
-            auto& sdpField = msg["sdp"];
-            
-            // sdp가 객체인 경우 ({"type": "answer", "sdp": "..."})
-            if (sdpField.is_object() && sdpField.contains("sdp")) {
-                result.sdp = sdpField["sdp"].get<std::string>();
-            }
-            // sdp가 직접 문자열인 경우
-            else if (sdpField.is_string()) {
-                result.sdp = sdpField.get<std::string>();
-            }
-            else {
-                LOG_ERROR("Invalid SDP format in answer message");
-                return std::nullopt;
+            if (msg["sdp"].is_object()) {
+                // sdp가 객체인 경우 (현재 웹 클라이언트가 보내는 형식)
+                result.sdp = msg["sdp"];
+                LOG_DEBUG("SDP is object type");
+            } else if (msg["sdp"].is_string()) {
+                // sdp가 문자열인 경우
+                try {
+                    result.sdp = nlohmann::json::parse(msg["sdp"].get<std::string>());
+                } catch (...) {
+                    // 파싱 실패 시 빈 객체로
+                    result.sdp = nlohmann::json::object();
+                    result.sdp["sdp"] = msg["sdp"].get<std::string>();
+                    result.sdp["type"] = "answer";
+                }
+                LOG_DEBUG("SDP is string type");
             }
         } else {
-            LOG_ERROR("Missing 'sdp' field in answer message");
+            LOG_ERROR("No 'sdp' field in answer message");
             return std::nullopt;
         }
 
-        if (result.peerId.empty() || result.sdp.empty()) {
-            LOG_ERROR("Missing peer_id or sdp in answer message");
+        if (result.peerId.empty()) {
+            LOG_ERROR("Empty peer_id in answer message");
             return std::nullopt;
         }
 
-        LOG_DEBUG("Parsed answer message for peer: {}, SDP length: {}", 
-                  result.peerId, result.sdp.length());
+        if (result.sdp.empty()) {
+            LOG_ERROR("Empty sdp in answer message");
+            return std::nullopt;
+        }
 
+        LOG_INFO("Successfully parsed answer from peer: {}", result.peerId);
         return result;
+        
     } catch (const std::exception& e) {
         LOG_ERROR("Error parsing Answer message: {}", e.what());
         return std::nullopt;

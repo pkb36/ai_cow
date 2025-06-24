@@ -280,6 +280,11 @@ bool Pipeline::Impl::createDynamicSink(DynamicStreamInfo& info) {
                  "async", FALSE,
                  nullptr);
     
+    LOG_INFO("Created UDP sink for peer {} on port {} (device: {}, type: {})", 
+             info.peerId, info.port, 
+             static_cast<int>(info.device), 
+             static_cast<int>(info.type));
+    
     // 파이프라인에 추가
     gst_bin_add_many(GST_BIN(pipeline.get()), info.queue, info.udpsink, nullptr);
     

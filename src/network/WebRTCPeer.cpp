@@ -237,11 +237,19 @@ bool WebRTCPeer::createOffer() {
         return false;
     }
     
+    // 이전 promise가 있으면 정리
+    if (impl_->promise) {
+        gst_promise_unref(impl_->promise);
+        impl_->promise = nullptr;
+    }
+    
     // Offer 생성
     impl_->promise = gst_promise_new_with_change_func(
         Impl::onOfferCreated, this, nullptr);
     
     g_signal_emit_by_name(impl_->webrtcbin, "create-offer", nullptr, impl_->promise);
+    
+    LOG_DEBUG("Creating offer for peer: {}", config_.peerId);
     
     return true;
 }
@@ -334,12 +342,14 @@ void WebRTCPeer::setState(State newState) {
 
 // 콜백 구현들
 void WebRTCPeer::Impl::onNegotiationNeeded(GstElement* element, gpointer userData) {
-    (void)element; // 미사용 매개변수 경고 제거
+    (void)element;
     auto* peer = static_cast<WebRTCPeer*>(userData);
     LOG_DEBUG("Negotiation needed for peer: {}", peer->config_.peerId);
     
+    // 자동으로 Offer 생성
     peer->createOffer();
 }
+
 
 void WebRTCPeer::Impl::onIceCandidate(GstElement* element, guint mlineIndex, 
                                       gchar* candidate, gpointer userData) {

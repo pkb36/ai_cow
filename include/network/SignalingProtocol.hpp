@@ -36,12 +36,12 @@ struct PeerLeftMessage {
 
 struct OfferMessage {
     std::string peerId;
-    std::string sdp;
+    nlohmann::json sdp;
 };
 
 struct AnswerMessage {
     std::string peerId;
-    std::string sdp;
+    nlohmann::json sdp;
 };
 
 struct IceCandidateMessage {

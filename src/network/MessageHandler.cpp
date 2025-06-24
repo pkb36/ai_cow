@@ -75,8 +75,38 @@ void MessageHandler::handlePeerLeft(const Signaling::PeerLeftMessage& msg) {
 }
 
 void MessageHandler::handleAnswer(const Signaling::AnswerMessage& msg) {
-    LOG_DEBUG("Received answer from peer: {}", msg.peerId);
-    webrtcManager_->handleAnswer(msg.peerId, msg.sdp);
+    LOG_INFO("=== Handling answer from peer: {} ===", msg.peerId);
+    
+    // JSON에서 SDP 문자열 추출
+    std::string sdpStr;
+    
+    try {
+        if (msg.sdp.is_object()) {
+            // sdp가 객체인 경우 {"type": "answer", "sdp": "v=0..."}
+            if (msg.sdp.contains("sdp")) {
+                if (msg.sdp["sdp"].is_string()) {
+                    sdpStr = msg.sdp["sdp"].get<std::string>();
+                    LOG_DEBUG("Extracted SDP from object, length: {}", sdpStr.length());
+                }
+            }
+        } else if (msg.sdp.is_string()) {
+            // sdp가 문자열인 경우
+            sdpStr = msg.sdp.get<std::string>();
+            LOG_DEBUG("SDP is string, length: {}", sdpStr.length());
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR("Failed to extract SDP: {}", e.what());
+        return;
+    }
+    
+    if (!sdpStr.empty()) {
+        LOG_INFO("Forwarding answer to WebRTC manager, SDP starts with: {}", 
+                 sdpStr.substr(0, 50));
+        webrtcManager_->handleAnswer(msg.peerId, sdpStr);
+    } else {
+        LOG_ERROR("Failed to extract SDP string from answer message");
+        LOG_DEBUG("SDP object dump: {}", msg.sdp.dump());
+    }
 }
 
 void MessageHandler::handleIceCandidate(const Signaling::IceCandidateMessage& msg) {
@@ -129,22 +159,22 @@ void MessageHandler::sendCameraStatus(const Signaling::CameraStatusMessage& stat
 }
 
 void MessageHandler::sendOffer(const std::string& peerId, const std::string& sdp) {
+    // SDP JSON 객체 생성
+    nlohmann::json sdpObj;
+    sdpObj["type"] = "offer";
+    sdpObj["sdp"] = sdp;  // 원본 SDP 문자열
+    
     Signaling::OfferMessage msg;
     msg.peerId = peerId;
-    msg.sdp = sdp;
+    msg.sdp = sdpObj;  // JSON 객체 그대로 저장
     
     auto jsonStr = Signaling::MessageParser::serialize(msg);
     
-    LOG_INFO("=== Sending Offer to Server ===");
-    LOG_INFO("Peer ID: {}", peerId);
-    LOG_INFO("SDP length: {}", sdp.length());
-    LOG_DEBUG("Full offer message: {}", jsonStr);
+    LOG_DEBUG("Sending offer for peer {}", peerId);
+    LOG_TRACE("Offer message: {}", jsonStr);
     
     if (sendCallback_) {
         sendCallback_(jsonStr);
-        LOG_INFO("✅ Offer sent successfully");
-    } else {
-        LOG_ERROR("❌ No send callback available!");
     }
 }
 
@@ -159,6 +189,7 @@ void MessageHandler::sendIceCandidate(const std::string& peerId,
     auto jsonStr = Signaling::MessageParser::serialize(msg);
     
     LOG_DEBUG("Sending ICE candidate {} for peer {}", mlineIndex, peerId);
+    LOG_TRACE("ICE candidate message: {}", jsonStr);
     
     if (sendCallback_) {
         sendCallback_(jsonStr);

@@ -25,14 +25,13 @@ bool WebRTCManager::addPeer(const std::string& peerId, const std::string& source
     auto context = std::make_unique<PeerContext>();
     context->info.peerId = peerId;
     context->info.device = parseSource(source);
-    context->info.streamType = parseStreamType(source);  // 스트림 타입도 파싱
+    context->info.streamType = parseStreamType(source);
     context->info.connectedTime = std::chrono::steady_clock::now();
     context->info.state = WebRTCPeer::State::NEW;
     
     // WebRTC peer 생성
     WebRTCPeer::Config peerConfig;
     peerConfig.peerId = peerId;
-    // STUN/TURN 서버 설정은 전역 설정에서 가져옴
     
     context->peer = std::make_unique<WebRTCPeer>(peerConfig);
     
@@ -45,16 +44,24 @@ bool WebRTCManager::addPeer(const std::string& peerId, const std::string& source
         return false;
     }
     
-    // ✅ Peer를 먼저 저장 (createPeerConnection 호출 전에!)
+    // Peer를 먼저 저장
     peers_[peerId] = std::move(context);
     
     // UDP source 생성 및 연결
     if (!createPeerConnection(peerId, source)) {
         LOG_ERROR("Failed to create peer connection for: {}", peerId);
-        // 실패 시 정리
         pipeline_->removeStream(peerId);
-        peers_.erase(peerId);  // 추가했던 peer 제거
+        peers_.erase(peerId);
         return false;
+    }
+    
+    // *** 중요: Offer 생성 추가 ***
+    auto it = peers_.find(peerId);
+    if (it != peers_.end() && it->second->peer) {
+        LOG_INFO("Creating offer for peer: {}", peerId);
+        if (!it->second->peer->createOffer()) {
+            LOG_ERROR("Failed to create offer for peer: {}", peerId);
+        }
     }
     
     LOG_INFO("Peer added successfully: {}", peerId);
@@ -120,13 +127,15 @@ bool WebRTCManager::createPeerConnection(const std::string& peerId,
     auto& context = it->second;
     
     // 동적 스트림 정보 가져오기
-    auto streamInfo = pipeline_->getDynamicStreamInfo(peerId);
-    if (!streamInfo.has_value() || streamInfo->port <= 0) {
-        LOG_ERROR("Failed to get valid stream info for peer: {}", peerId);
+    auto dynamicInfo = pipeline_->getDynamicStreamInfo(peerId);
+    if (dynamicInfo.has_value()) {
+        context->streamPort = dynamicInfo->port;
+        LOG_INFO("Using dynamic stream port {} for peer {}", 
+                 context->streamPort, peerId);
+    } else {
+        LOG_ERROR("No dynamic stream info found for peer: {}", peerId);
         return false;
     }
-    
-    context->streamPort = streamInfo->port;
     
     // UDP 소스 생성
     context->udpSrc = gst_element_factory_make("udpsrc", nullptr);
@@ -135,40 +144,22 @@ bool WebRTCManager::createPeerConnection(const std::string& peerId,
         return false;
     }
     
-    // ✅ 중요: H264 RTP caps 설정 (clock-rate 포함)
-    GstCaps* caps = gst_caps_from_string(
-        "application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000");
+    // RTP 캡슐화 확인
+    std::string caps_str = "application/x-rtp,media=video,encoding-name=H264,payload=96";
+    
+    GstCaps* caps = gst_caps_from_string(caps_str.c_str());
     
     // UDP 소스 설정
     g_object_set(context->udpSrc, 
                  "port", context->streamPort,
                  "caps", caps,
-                 "buffer-size", 524288,  // 512KB
+                 "buffer-size", 2097152,  // 2MB
                  nullptr);
     
     gst_caps_unref(caps);
     
-    LOG_DEBUG("Created UDP source on port {} for peer {}", 
-              context->streamPort, peerId);
-    
-    // ✅ 디버깅을 위한 프로브 추가
-    GstPad* srcPad = gst_element_get_static_pad(context->udpSrc, "src");
-    if (srcPad) {
-        gst_pad_add_probe(srcPad, GST_PAD_PROBE_TYPE_BUFFER,
-            [](GstPad* pad, GstPadProbeInfo* info, gpointer userData) -> GstPadProbeReturn {
-                static int count = 0;
-                if (++count % 30 == 0) {  // 30 프레임마다 로그
-                    auto* peerId = static_cast<std::string*>(userData);
-                    GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
-                    LOG_DEBUG("UDP source receiving data for peer {}: buffer size = {}", 
-                             *peerId, gst_buffer_get_size(buffer));
-                }
-                return GST_PAD_PROBE_OK;
-            },
-            new std::string(peerId),
-            [](gpointer data) { delete static_cast<std::string*>(data); });
-        gst_object_unref(srcPad);
-    }
+    LOG_INFO("Created UDP source on port {} for peer {}", 
+             context->streamPort, peerId);
     
     // WebRTC peer에 연결
     if (!context->peer->connectToStream(context->udpSrc)) {
@@ -178,7 +169,6 @@ bool WebRTCManager::createPeerConnection(const std::string& peerId,
         return false;
     }
     
-    LOG_INFO("Created peer connection for {} on port {}", peerId, context->streamPort);
     return true;
 }
 
@@ -276,12 +266,11 @@ void WebRTCManager::onIceCandidate(const std::string& peerId,
 }
 
 void WebRTCManager::onOfferCreated(const std::string& peerId, const std::string& sdp) {
-    LOG_INFO("Offer created for peer: {} (SDP length: {})", peerId, sdp.length());
+    LOG_DEBUG("Offer created for peer: {}", peerId);
     
+    // MessageHandler가 JSON 형식을 처리하므로 sdp를 그대로 전달
     if (messageCallback_) {
         messageCallback_(peerId, "offer", sdp);
-    } else {
-        LOG_ERROR("No message callback set!");
     }
 }
 

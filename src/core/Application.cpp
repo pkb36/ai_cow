@@ -806,58 +806,54 @@ void Application::onWebSocketDisconnected() {
 }
 
 void Application::onWebSocketMessage(const std::string& message) {
-    // 모든 메시지를 상세히 로깅
-    LOG_INFO("=== WebSocket Message Received ===");
+    // answer 메시지 특별 처리
+    if (message.find("\"action\": \"answer\"") != std::string::npos || 
+        message.find("\"action\":\"answer\"") != std::string::npos) {
+        LOG_INFO("=== ANSWER MESSAGE DETECTED ===");
+        LOG_DEBUG("Raw answer message: {}", message);
+    }
     
     try {
         auto j = nlohmann::json::parse(message);
         std::string action = j.value("action", "unknown");
         std::string peerType = j.value("peerType", "unknown");
         
+        LOG_INFO("=== WebSocket Message Received ===");
         LOG_INFO("Action: {}, PeerType: {}", action, peerType);
         
-        // 특정 액션에 대한 상세 로깅
+        // answer 메시지인 경우 구조 확인
         if (action == "answer") {
-            LOG_INFO("✅ ANSWER received from server!");
+            LOG_INFO("Answer message structure check:");
             if (j.contains("message")) {
                 auto& msg = j["message"];
-                std::string peerId = msg.value("peer_id", "unknown");
-                LOG_INFO("Answer for peer: {}", peerId);
-                
-                // SDP 내용 확인
+                LOG_INFO("  - message field exists");
+                if (msg.contains("peer_id")) {
+                    LOG_INFO("  - peer_id: {}", msg["peer_id"].get<std::string>());
+                }
                 if (msg.contains("sdp")) {
-                    auto& sdp = msg["sdp"];
-                    if (sdp.is_object()) {
-                        std::string sdpType = sdp.value("type", "");
-                        std::string sdpContent = sdp.value("sdp", "");
-                        LOG_INFO("SDP type: {}, length: {}", sdpType, sdpContent.length());
+                    LOG_INFO("  - sdp field exists, type: {}", 
+                            msg["sdp"].type_name());
+                    if (msg["sdp"].is_object() && msg["sdp"].contains("type")) {
+                        LOG_INFO("  - sdp.type: {}", 
+                                msg["sdp"]["type"].get<std::string>());
                     }
                 }
             }
-        } else if (action == "candidate") {
-            LOG_INFO("✅ ICE candidate received from server");
-            if (j.contains("message")) {
-                auto& msg = j["message"];
-                std::string peerId = msg.value("peer_id", "unknown");
-                LOG_INFO("ICE candidate for peer: {}", peerId);
-            }
-        } else if (action == "error") {
-            LOG_ERROR("❌ Error message from server: {}", j.dump(2));
-        } else if (action == "ROOM_PEER_JOINED") {
-            LOG_INFO("Peer joined notification");
-        } else if (action == "ROOM_PEER_LEFT") {
-            LOG_INFO("Peer left notification");
-        } else if (action == "camstatus_reply") {
-            // 무시
-            return;
-        } else {
-            LOG_WARNING("Unknown action: {}", action);
-            LOG_DEBUG("Full message: {}", j.dump(2));
         }
         
+        // ICE candidate 수신 카운트
+        static int ice_count = 0;
+        if (action == "candidate") {
+            ice_count++;
+            LOG_DEBUG("ICE candidate #{} received", ice_count);
+        }
+        
+        // 특정 action들 로깅
+        if (action == "ROOM_PEER_JOINED") {
+            LOG_INFO("Peer joined notification");
+        }
     } catch (const std::exception& e) {
-        LOG_ERROR("Failed to parse WebSocket message: {}", e.what());
-        LOG_DEBUG("Raw message: {}", message);
+        LOG_ERROR("JSON parsing error: {}", e.what());
     }
     
     // 메시지 핸들러로 전달
