@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(WebRTCCamera VERSION 2.0.0 LANGUAGES CXX)
+project(ai_cds VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,6 +58,40 @@ pkg_check_modules(GLIB_DEPS REQUIRED
     gio-2.0
 )
 
+# CUDA 찾기 (선택적)
+find_package(CUDA QUIET)
+if(CUDA_FOUND)
+    add_definitions(-DHAVE_CUDA)
+    message(STATUS "CUDA found: ${CUDA_VERSION}")
+    include_directories(${CUDA_INCLUDE_DIRS})
+    
+    # CUDA 라이브러리 경로 추가
+    if(EXISTS "/usr/local/cuda/lib64")
+        link_directories(/usr/local/cuda/lib64)
+    elseif(EXISTS "/usr/local/cuda-11.4/lib64")
+        link_directories(/usr/local/cuda-11.4/lib64)
+    endif()
+else()
+    message(STATUS "CUDA not found - CUDA features will be disabled")
+endif()
+
+# DeepStream 찾기 (선택적)
+set(DEEPSTREAM_ROOT "/opt/nvidia/deepstream/deepstream")
+if(EXISTS ${DEEPSTREAM_ROOT})
+    include_directories(${DEEPSTREAM_ROOT}/sources/includes)
+    link_directories(${DEEPSTREAM_ROOT}/lib)
+    add_definitions(-DHAVE_DEEPSTREAM)
+    message(STATUS "DeepStream found at ${DEEPSTREAM_ROOT}")
+else()
+    set(DEEPSTREAM_ROOT "/opt/nvidia/deepstream/deepstream-6.2")
+    if(EXISTS ${DEEPSTREAM_ROOT})
+        include_directories(${DEEPSTREAM_ROOT}/sources/includes)
+        link_directories(${DEEPSTREAM_ROOT}/lib)
+        add_definitions(-DHAVE_DEEPSTREAM)
+        message(STATUS "DeepStream found at ${DEEPSTREAM_ROOT}")
+    endif()
+endif()
+
 # 소스 파일
 set(SOURCES
     src/main.cpp
@@ -82,8 +116,6 @@ set(SOURCES
     src/utils/Performance.cpp
 )
 
-link_directories(/opt/nvidia/deepstream/deepstream-6.2/lib)
-
 # 실행 파일
 add_executable(ai_cds ${SOURCES})
 
@@ -94,7 +126,6 @@ target_include_directories(ai_cds PRIVATE
     ${SOUP_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
     ${GLIB_DEPS_INCLUDE_DIRS}
-    /opt/nvidia/deepstream/deepstream-6.2/sources/includes
 )
 
 if(OpenCV_FOUND)
@@ -113,9 +144,21 @@ target_link_libraries(ai_cds
     nlohmann_json::nlohmann_json
 )
 
-target_link_libraries(ai_cds
-    nvdsgst_meta
-)
+# CUDA 라이브러리 조건부 링크
+if(CUDA_FOUND)
+    if(CUDA_CUDART_LIBRARY)
+        target_link_libraries(ai_cds ${CUDA_CUDART_LIBRARY})
+    endif()
+endif()
+
+if(EXISTS ${DEEPSTREAM_ROOT})
+    target_link_libraries(ai_cds
+        nvdsgst_meta
+        nvds_meta
+        nvbufsurface
+        nvbufsurftransform
+    )
+endif()
 
 if(OpenCV_FOUND)
     target_link_libraries(ai_cds ${OpenCV_LIBS})
@@ -145,7 +188,7 @@ if(BUILD_TESTS)
 endif()
 
 # 패키징
-set(CPACK_PACKAGE_NAME "WebRTCCamera")
+set(CPACK_PACKAGE_NAME "AI_CDS")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_GENERATOR "DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Your Name")
