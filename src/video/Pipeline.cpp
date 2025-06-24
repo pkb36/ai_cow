@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <sstream>
+#include <future>
 
 enum ProcessType {
     SENDER = 0,
@@ -193,6 +194,9 @@ std::optional<int> Pipeline::addDynamicStream(const std::string& peerId,
                                              StreamType type) {
     std::lock_guard<std::mutex> lock(impl_->streamMutex);
     
+    LOG_DEBUG("Adding dynamic stream for peer: {} (device: {}, type: {})", 
+              peerId, static_cast<int>(device), static_cast<int>(type));
+    
     // 이미 존재하는지 확인
     if (impl_->dynamicStreams.find(peerId) != impl_->dynamicStreams.end()) {
         LOG_WARNING("Stream already exists for peer: {}", peerId);
@@ -214,8 +218,19 @@ std::optional<int> Pipeline::addDynamicStream(const std::string& peerId,
     info.port = port;
     info.active = false;
     
-    // 동적 싱크 생성
-    if (!impl_->createDynamicSink(info)) {
+    // 동적 싱크 생성 (타임아웃 적용)
+    auto createFuture = std::async(std::launch::async, [this, &info]() {
+        return impl_->createDynamicSink(info);
+    });
+    
+    auto status = createFuture.wait_for(std::chrono::seconds(3));
+    if (status != std::future_status::ready) {
+        impl_->releasePort(port);
+        LOG_ERROR("Dynamic sink creation timed out for peer: {}", peerId);
+        return std::nullopt;
+    }
+    
+    if (!createFuture.get()) {
         impl_->releasePort(port);
         LOG_ERROR("Failed to create dynamic sink for peer: {}", peerId);
         return std::nullopt;
@@ -224,7 +239,7 @@ std::optional<int> Pipeline::addDynamicStream(const std::string& peerId,
     // 스트림 정보 저장
     impl_->dynamicStreams[peerId] = info;
     
-    LOG_INFO("Added dynamic stream for peer {} on port {} (device: {}, type: {})", 
+    LOG_INFO("✅ Added dynamic stream for peer {} on port {} (device: {}, type: {})", 
              peerId, port, static_cast<int>(device), static_cast<int>(type));
     
     return port;

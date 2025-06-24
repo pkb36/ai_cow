@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>  // json/json.h 대신 nlohmann/json.hpp 사용
 #include "network/WebRTCPeer.hpp"
 #include "video/Pipeline.hpp"
+#include "utils/ThreadPool.hpp"
 
 class WebRTCManager {
 public:
@@ -23,6 +24,7 @@ public:
 
     // Peer 관리
     bool addPeer(const std::string& peerId, const std::string& source);
+    bool addPeerAsync(const std::string& peerId, const std::string& source);
     bool removePeer(const std::string& peerId);
     void removeAllPeers();
 
@@ -74,4 +76,20 @@ private:
     void onOfferCreated(const std::string& peerId, const std::string& sdp);
     void onStateChange(const std::string& peerId, WebRTCPeer::State oldState, WebRTCPeer::State newState);
     void onError(const std::string& peerId, const std::string& error);
+
+    bool addPeerSync(const std::string& peerId, const std::string& source);
+    bool createPeerConnectionAsync(const std::string& peerId, const std::string& source);
+    // 비동기 작업을 위한 스레드 풀
+    std::unique_ptr<ThreadPool> asyncTasks_;
+    
+    // 비동기 연결 상태 추적
+    struct PendingConnection {
+        std::string peerId;
+        std::string source;
+        std::chrono::steady_clock::time_point startTime;
+        bool inProgress;
+    };
+    
+    std::unordered_map<std::string, PendingConnection> pendingConnections_;
+    mutable std::mutex pendingMutex_;
 };

@@ -62,13 +62,26 @@ void MessageHandler::handleMessage(const std::string& message) {
 void MessageHandler::handlePeerJoined(const Signaling::PeerJoinedMessage& msg) {
     LOG_INFO("Peer joined: {} with source: {}", msg.peerId, msg.source);
     
+    // 완전 비동기 처리 - 메인 스레드 블로킹 방지
     backgroundTasks_->enqueue([this, peerId = msg.peerId, source = msg.source]() {
-        if (!webrtcManager_->addPeer(peerId, source)) {
-            LOG_ERROR("Failed to add peer: {}", peerId);
+        LOG_INFO("Processing peer connection asynchronously: {}", peerId);
+        
+        try {
+            // 비동기로 peer 추가
+            if (!webrtcManager_->addPeerAsync(peerId, source)) {
+                LOG_ERROR("Failed to add peer: {}", peerId);
+                return;
+            }
+            
+            LOG_INFO("Peer {} added successfully in background", peerId);
+            
+        } catch (const std::exception& e) {
+            LOG_ERROR("Exception adding peer {}: {}", peerId, e.what());
         }
     });
     
-    // Offer 생성은 WebRTCManager 내부에서 처리
+    // 즉시 반환하여 다른 메시지 처리 가능
+    LOG_DEBUG("Peer {} queued for background processing", msg.peerId);
 }
 
 void MessageHandler::handlePeerLeft(const Signaling::PeerLeftMessage& msg) {

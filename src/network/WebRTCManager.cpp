@@ -2,7 +2,8 @@
 #include "core/Logger.hpp"
 
 WebRTCManager::WebRTCManager(std::shared_ptr<Pipeline> pipeline)
-    : pipeline_(pipeline) {
+    : pipeline_(pipeline), 
+    asyncTasks_(std::make_unique<ThreadPool>(4)) {
     LOG_TRACE("WebRTCManager created");
 }
 
@@ -405,4 +406,215 @@ WebRTCManager::GlobalStatistics WebRTCManager::getGlobalStatistics() const {
     }
     
     return stats;
+}
+
+bool WebRTCManager::addPeerAsync(const std::string& peerId, const std::string& source) {
+    // 중복 연결 요청 방지
+    {
+        std::lock_guard<std::mutex> lock(pendingMutex_);
+        auto it = pendingConnections_.find(peerId);
+        if (it != pendingConnections_.end() && it->second.inProgress) {
+            LOG_WARNING("Peer {} connection already in progress", peerId);
+            return false;
+        }
+        
+        // 대기 중인 연결로 등록
+        PendingConnection pending;
+        pending.peerId = peerId;
+        pending.source = source;
+        pending.startTime = std::chrono::steady_clock::now();
+        pending.inProgress = true;
+        
+        pendingConnections_[peerId] = pending;
+    }
+    
+    // 비동기 작업 큐에 추가
+    asyncTasks_->enqueue([this, peerId, source]() {
+        LOG_INFO("Starting async peer connection: {}", peerId);
+        
+        bool success = false;
+        try {
+            // 1단계: 빠른 검증
+            if (peers_.find(peerId) != peers_.end()) {
+                LOG_WARNING("Peer {} already exists", peerId);
+                success = false;
+            } else {
+                // 2단계: 동기 연결 수행 (별도 스레드에서)
+                success = addPeerSync(peerId, source);
+            }
+            
+        } catch (const std::exception& e) {
+            LOG_ERROR("Exception in async peer connection {}: {}", peerId, e.what());
+            success = false;
+        }
+        
+        // 3단계: 연결 완료 처리
+        {
+            std::lock_guard<std::mutex> lock(pendingMutex_);
+            auto it = pendingConnections_.find(peerId);
+            if (it != pendingConnections_.end()) {
+                it->second.inProgress = false;
+                
+                if (success) {
+                    LOG_INFO("✅ Async peer connection completed: {}", peerId);
+                    pendingConnections_.erase(it);
+                } else {
+                    LOG_ERROR("❌ Async peer connection failed: {}", peerId);
+                    // 실패한 연결은 5초 후 정리
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                    pendingConnections_.erase(it);
+                }
+            }
+        }
+        
+        return success;
+    });
+    
+    return true;  // 큐에 성공적으로 추가됨
+}
+
+bool WebRTCManager::addPeerSync(const std::string& peerId, const std::string& source) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    LOG_INFO("Adding peer synchronously: {} with source: {}", peerId, source);
+    
+    // 기존 addPeer 로직과 동일하지만 에러 처리 강화
+    if (peers_.find(peerId) != peers_.end()) {
+        LOG_WARNING("Peer already exists: {}", peerId);
+        return false;
+    }
+    
+    // Peer context 생성
+    auto context = std::make_unique<PeerContext>();
+    context->info.peerId = peerId;
+    context->info.device = parseSource(source);
+    context->info.streamType = parseStreamType(source);
+    context->info.connectedTime = std::chrono::steady_clock::now();
+    context->info.state = WebRTCPeer::State::NEW;
+    
+    // WebRTC peer 생성
+    WebRTCPeer::Config peerConfig;
+    peerConfig.peerId = peerId;
+    
+    context->peer = std::make_unique<WebRTCPeer>(peerConfig);
+    
+    // 콜백 설정
+    setupPeerCallbacks(context.get());
+    
+    // Pipeline에 스트림 추가 (논블로킹으로 시도)
+    LOG_DEBUG("Adding stream to pipeline for peer: {}", peerId);
+    
+    if (!pipeline_->addStream(peerId, context->info.device, context->info.streamType)) {
+        LOG_ERROR("Failed to add stream to pipeline for peer: {}", peerId);
+        return false;
+    }
+    
+    LOG_DEBUG("Pipeline stream added successfully for peer: {}", peerId);
+    
+    // Peer를 먼저 저장
+    peers_[peerId] = std::move(context);
+    
+    // UDP source 생성은 기존 방식 사용 (createPeerConnection)
+    if (!createPeerConnection(peerId, source)) {
+        LOG_ERROR("Failed to create peer connection for: {}", peerId);
+        pipeline_->removeStream(peerId);
+        peers_.erase(peerId);
+        return false;
+    }
+    
+    LOG_INFO("Peer added successfully: {}", peerId);
+    return true;
+}
+
+bool WebRTCManager::createPeerConnectionAsync(const std::string& peerId, 
+                                            const std::string& source) {
+    auto it = peers_.find(peerId);
+    if (it == peers_.end()) {
+        LOG_ERROR("Peer not found: {}", peerId);
+        return false;
+    }
+    
+    auto& context = it->second;
+    
+    // 동적 스트림 정보 가져오기
+    auto dynamicInfo = pipeline_->getDynamicStreamInfo(peerId);
+    if (!dynamicInfo.has_value()) {
+        LOG_ERROR("No dynamic stream info found for peer: {}", peerId);
+        return false;
+    }
+    
+    context->streamPort = dynamicInfo->port;
+    LOG_INFO("Using dynamic stream port {} for peer {}", 
+             context->streamPort, peerId);
+    
+    // UDP 소스 생성 (GStreamer 메인 스레드에서 실행)
+    GMainContext* mainContext = g_main_context_default();
+    
+    bool udpCreated = false;
+    GstElement* udpSrc = nullptr;
+    
+    // 매개변수를 스택에 생성
+    struct UdpCreateParams {
+        WebRTCManager* manager;
+        std::string peerId;
+        int port;
+        bool* success;
+        GstElement** element;
+    };
+    
+    UdpCreateParams params = {
+        this,
+        peerId,
+        context->streamPort,
+        &udpCreated,
+        &udpSrc
+    };
+    
+    // 메인 스레드에서 UDP 소스 생성
+    g_main_context_invoke_full(mainContext, G_PRIORITY_DEFAULT,
+        [](gpointer data) -> gboolean {
+            auto* params = static_cast<UdpCreateParams*>(data);
+            
+            *(params->element) = gst_element_factory_make("udpsrc", nullptr);
+            if (*(params->element)) {
+                std::string caps_str = "application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96";
+                GstCaps* caps = gst_caps_from_string(caps_str.c_str());
+                
+                g_object_set(*(params->element), 
+                             "port", params->port,
+                             "caps", caps,
+                             "buffer-size", 2097152,
+                             nullptr);
+                
+                gst_caps_unref(caps);
+                *(params->success) = true;
+                
+                LOG_INFO("Created UDP source on port {} for peer {}", params->port, params->peerId);
+            } else {
+                LOG_ERROR("Failed to create UDP source for peer {}", params->peerId);
+                *(params->success) = false;
+            }
+            
+            return G_SOURCE_REMOVE;
+        },
+        &params,
+        nullptr
+    );
+    
+    if (!udpCreated || !udpSrc) {
+        LOG_ERROR("Failed to create UDP source");
+        return false;
+    }
+    
+    context->udpSrc = udpSrc;
+    
+    // WebRTC peer에 연결 (비동기)
+    if (!context->peer->connectToStream(context->udpSrc)) {
+        LOG_ERROR("Failed to connect WebRTC peer to stream");
+        gst_object_unref(context->udpSrc);
+        context->udpSrc = nullptr;
+        return false;
+    }
+    
+    return true;
 }
