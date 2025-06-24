@@ -145,7 +145,7 @@ bool WebRTCManager::createPeerConnection(const std::string& peerId,
     }
     
     // RTP 캡슐화 확인
-    std::string caps_str = "application/x-rtp,media=video,encoding-name=H264,payload=96";
+    std::string caps_str = "application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=96";
     
     GstCaps* caps = gst_caps_from_string(caps_str.c_str());
     

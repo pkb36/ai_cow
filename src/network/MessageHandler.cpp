@@ -3,7 +3,8 @@
 #include "core/Config.hpp"
 
 MessageHandler::MessageHandler(std::shared_ptr<WebRTCManager> webrtcManager)
-    : webrtcManager_(webrtcManager) {
+    : webrtcManager_(webrtcManager),
+    backgroundTasks_(std::make_unique<ThreadPool>(2)) {
     
     // WebRTC 매니저의 메시지 콜백 설정
     webrtcManager_->setMessageCallback(
@@ -61,10 +62,11 @@ void MessageHandler::handleMessage(const std::string& message) {
 void MessageHandler::handlePeerJoined(const Signaling::PeerJoinedMessage& msg) {
     LOG_INFO("Peer joined: {} with source: {}", msg.peerId, msg.source);
     
-    if (!webrtcManager_->addPeer(msg.peerId, msg.source)) {
-        LOG_ERROR("Failed to add peer: {}", msg.peerId);
-        return;
-    }
+    backgroundTasks_->enqueue([this, peerId = msg.peerId, source = msg.source]() {
+        if (!webrtcManager_->addPeer(peerId, source)) {
+            LOG_ERROR("Failed to add peer: {}", peerId);
+        }
+    });
     
     // Offer 생성은 WebRTCManager 내부에서 처리
 }
@@ -77,6 +79,7 @@ void MessageHandler::handlePeerLeft(const Signaling::PeerLeftMessage& msg) {
 void MessageHandler::handleAnswer(const Signaling::AnswerMessage& msg) {
     LOG_INFO("=== Handling answer from peer: {} ===", msg.peerId);
     
+    std::string actualPeerId = msg.peerId;
     // JSON에서 SDP 문자열 추출
     std::string sdpStr;
     
@@ -102,7 +105,7 @@ void MessageHandler::handleAnswer(const Signaling::AnswerMessage& msg) {
     if (!sdpStr.empty()) {
         LOG_INFO("Forwarding answer to WebRTC manager, SDP starts with: {}", 
                  sdpStr.substr(0, 50));
-        webrtcManager_->handleAnswer(msg.peerId, sdpStr);
+        webrtcManager_->handleAnswer(actualPeerId, sdpStr);
     } else {
         LOG_ERROR("Failed to extract SDP string from answer message");
         LOG_DEBUG("SDP object dump: {}", msg.sdp.dump());
@@ -135,7 +138,7 @@ void MessageHandler::handleOffer(const Signaling::OfferMessage& msg)
 
 void MessageHandler::sendRegistration(const std::string& cameraId) {
     Signaling::RegisterMessage msg;
-    msg.cameraId = "ai_cds";
+    msg.cameraId = "ITC100A-23081111";
     msg.firmwareVersion = "1.0.0";  // 실제 버전 정보로 대체
     msg.aiVersion = "0.1.0";
     

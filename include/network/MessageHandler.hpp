@@ -4,6 +4,7 @@
 #include <memory>
 #include "network/SignalingProtocol.hpp"
 #include "network/WebRTCManager.hpp"
+#include "utils/ThreadPool.hpp"
 
 class MessageHandler {
 public:
@@ -26,6 +27,7 @@ public:
 private:
     std::shared_ptr<WebRTCManager> webrtcManager_;
     SendMessageCallback sendCallback_;
+    std::unique_ptr<ThreadPool> backgroundTasks_;
     
     // 각 메시지 타입별 핸들러
     void handlePeerJoined(const Signaling::PeerJoinedMessage& msg);

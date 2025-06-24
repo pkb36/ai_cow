@@ -27,11 +27,31 @@ bool WebSocketClient::connect(const std::string& url) {
 
     impl_->url = url;
     
+    // webrtc와 동일한 세션 설정 추가
+    const char* https_aliases[] = {"wss", NULL};
+    
+    if (impl_->session) {
+        g_object_unref(impl_->session);
+    }
+    
+    impl_->session = soup_session_new_with_options(
+        SOUP_SESSION_SSL_STRICT, FALSE,  // strict_ssl 설정
+        SOUP_SESSION_SSL_USE_SYSTEM_CA_FILE, TRUE,
+        SOUP_SESSION_HTTPS_ALIASES, https_aliases, 
+        NULL);
+    
+    // 로거 추가 (디버깅용)
+    SoupLogger* logger = soup_logger_new(SOUP_LOGGER_LOG_BODY, -1);
+    soup_session_add_feature(impl_->session, SOUP_SESSION_FEATURE(logger));
+    g_object_unref(logger);
+    
     SoupMessage* msg = soup_message_new(SOUP_METHOD_GET, url.c_str());
     if (!msg) {
         LOG_ERROR("Failed to create message for URL: {}", url);
         return false;
     }
+
+    LOG_INFO("Attempting WebSocket connection to: {}", url);
 
     soup_session_websocket_connect_async(
         impl_->session, msg, nullptr, nullptr, nullptr,
@@ -114,6 +134,9 @@ void WebSocketClient::onMessage(SoupWebsocketConnection* /*conn*/,
                                GBytes* message,
                                gpointer userData) {
     auto* client = static_cast<WebSocketClient*>(userData);
+
+    LOG_INFO("=== WebSocketClient::onMessage CALLED ===");
+    LOG_INFO("Message type: {}", (type == SOUP_WEBSOCKET_DATA_TEXT) ? "TEXT" : "BINARY");
     
     if (type == SOUP_WEBSOCKET_DATA_TEXT) {
         gsize size;

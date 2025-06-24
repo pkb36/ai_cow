@@ -495,6 +495,15 @@ bool Application::setupWebSocket() {
    });
    
    wsClient_->setMessageCallback([this](const std::string& msg) { 
+        LOG_INFO("=== RAW WebSocket message received ===");
+        LOG_INFO("Message: {}", msg);
+        
+        try {
+            auto j = nlohmann::json::parse(msg);
+            if (j.contains("action")) {
+                LOG_INFO("Action: {}", j["action"].get<std::string>());
+            }
+        } catch (...) {} 
        stats_.messagesReceived++;
        onWebSocketMessage(msg); 
    });
@@ -775,6 +784,12 @@ void Application::shutdown() {
 // WebSocket 이벤트 핸들러
 void Application::onWebSocketConnected() {
     LOG_INFO("WebSocket connected - registering with server");
+
+    LOG_INFO("=================================");
+    LOG_INFO("WebSocket Connected!");
+    LOG_INFO("Camera ID: {}", Config::getInstance().getWebRTCConfig().cameraId);
+    LOG_INFO("=================================");
+    
     setState(State::CONNECTED);
     reconnectAttempts_ = 0;
     
@@ -806,52 +821,53 @@ void Application::onWebSocketDisconnected() {
 }
 
 void Application::onWebSocketMessage(const std::string& message) {
-    // answer 메시지 특별 처리
-    if (message.find("\"action\": \"answer\"") != std::string::npos || 
-        message.find("\"action\":\"answer\"") != std::string::npos) {
-        LOG_INFO("=== ANSWER MESSAGE DETECTED ===");
-        LOG_DEBUG("Raw answer message: {}", message);
+    // 모든 메시지를 일단 로깅
+    LOG_INFO("=== RAW WebSocket message received ===");
+    LOG_INFO("Message length: {}", message.length());
+    
+    // action만 빠르게 확인
+    size_t actionPos = message.find("\"action\"");
+    if (actionPos != std::string::npos) {
+        size_t start = message.find("\"", actionPos + 8) + 1;
+        size_t end = message.find("\"", start);
+        std::string action = message.substr(start, end - start);
+        LOG_INFO("Action extracted: {}", action);
     }
     
+    // 특히 answer가 있는지 체크
+    if (message.find("answer") != std::string::npos) {
+        LOG_ERROR("!!!! ANSWER keyword found in message !!!!");
+        LOG_ERROR("Full message: {}", message);
+    }
+
     try {
         auto j = nlohmann::json::parse(message);
         std::string action = j.value("action", "unknown");
         std::string peerType = j.value("peerType", "unknown");
         
-        LOG_INFO("=== WebSocket Message Received ===");
-        LOG_INFO("Action: {}, PeerType: {}", action, peerType);
-        
-        // answer 메시지인 경우 구조 확인
-        if (action == "answer") {
-            LOG_INFO("Answer message structure check:");
-            if (j.contains("message")) {
-                auto& msg = j["message"];
-                LOG_INFO("  - message field exists");
-                if (msg.contains("peer_id")) {
-                    LOG_INFO("  - peer_id: {}", msg["peer_id"].get<std::string>());
-                }
-                if (msg.contains("sdp")) {
-                    LOG_INFO("  - sdp field exists, type: {}", 
-                            msg["sdp"].type_name());
-                    if (msg["sdp"].is_object() && msg["sdp"].contains("type")) {
-                        LOG_INFO("  - sdp.type: {}", 
-                                msg["sdp"]["type"].get<std::string>());
-                    }
-                }
+        // 서버가 잘못 라우팅한 answer 메시지 감지
+        if (action == "answer" && peerType == "user") {
+            // 이 경우는 user가 보낸 answer가 서버를 통해 카메라로 온 것
+            LOG_INFO("=== INTERCEPTED ANSWER FROM USER ===");
+            
+            // message 필드에서 peer_id 추출 (이것이 원래 보낸 user의 channel)
+            if (j.contains("message") && j["message"].contains("peer_id")) {
+                std::string originalSender = j["message"]["peer_id"].get<std::string>();
+                LOG_INFO("Original sender (user channel): {}", originalSender);
+                
+                // peer_id를 우리가 관리하는 실제 peer_id로 변환
+                // channel name 형식: "specific.XXXXX"에서 peer_id 추출이 필요할 수 있음
+                
+                // 메시지를 그대로 처리
+                messageHandler_->handleMessage(message);
+                return;
             }
         }
         
-        // ICE candidate 수신 카운트
-        static int ice_count = 0;
-        if (action == "candidate") {
-            ice_count++;
-            LOG_DEBUG("ICE candidate #{} received", ice_count);
-        }
+        // 기타 메시지는 정상 처리
+        LOG_INFO("=== WebSocket Message Received ===");
+        LOG_INFO("Action: {}, PeerType: {}", action, peerType);
         
-        // 특정 action들 로깅
-        if (action == "ROOM_PEER_JOINED") {
-            LOG_INFO("Peer joined notification");
-        }
     } catch (const std::exception& e) {
         LOG_ERROR("JSON parsing error: {}", e.what());
     }
