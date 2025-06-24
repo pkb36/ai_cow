@@ -119,11 +119,10 @@ bool WebRTCManager::createPeerConnection(const std::string& peerId,
     
     auto& context = it->second;
     
-    // 이미 addPeer()에서 pipeline_->addStream()을 통해 스트림을 추가했으므로,
-    // 여기서는 스트림 정보만 가져옴
+    // 동적 스트림 정보 가져오기
     auto streamInfo = pipeline_->getDynamicStreamInfo(peerId);
-    if (!streamInfo.has_value()) {
-        LOG_ERROR("Failed to get stream info for peer: {}", peerId);
+    if (!streamInfo.has_value() || streamInfo->port <= 0) {
+        LOG_ERROR("Failed to get valid stream info for peer: {}", peerId);
         return false;
     }
     
@@ -136,21 +135,40 @@ bool WebRTCManager::createPeerConnection(const std::string& peerId,
         return false;
     }
     
-    // RTP 캡슐화 확인
-    std::string caps_str = "application/x-rtp,media=video,encoding-name=H264,payload=96";
-    GstCaps* caps = gst_caps_from_string(caps_str.c_str());
+    // ✅ 중요: H264 RTP caps 설정 (clock-rate 포함)
+    GstCaps* caps = gst_caps_from_string(
+        "application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000");
     
     // UDP 소스 설정
     g_object_set(context->udpSrc, 
                  "port", context->streamPort,
                  "caps", caps,
-                 "buffer-size", 2097152,  // 2MB
+                 "buffer-size", 524288,  // 512KB
                  nullptr);
     
     gst_caps_unref(caps);
     
     LOG_DEBUG("Created UDP source on port {} for peer {}", 
               context->streamPort, peerId);
+    
+    // ✅ 디버깅을 위한 프로브 추가
+    GstPad* srcPad = gst_element_get_static_pad(context->udpSrc, "src");
+    if (srcPad) {
+        gst_pad_add_probe(srcPad, GST_PAD_PROBE_TYPE_BUFFER,
+            [](GstPad* pad, GstPadProbeInfo* info, gpointer userData) -> GstPadProbeReturn {
+                static int count = 0;
+                if (++count % 30 == 0) {  // 30 프레임마다 로그
+                    auto* peerId = static_cast<std::string*>(userData);
+                    GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+                    LOG_DEBUG("UDP source receiving data for peer {}: buffer size = {}", 
+                             *peerId, gst_buffer_get_size(buffer));
+                }
+                return GST_PAD_PROBE_OK;
+            },
+            new std::string(peerId),
+            [](gpointer data) { delete static_cast<std::string*>(data); });
+        gst_object_unref(srcPad);
+    }
     
     // WebRTC peer에 연결
     if (!context->peer->connectToStream(context->udpSrc)) {

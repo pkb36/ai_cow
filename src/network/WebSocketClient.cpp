@@ -60,9 +60,12 @@ bool WebSocketClient::isConnected() const {
 
 void WebSocketClient::sendText(const std::string& message) {
     if (!isConnected()) {
-        LOG_ERROR("Not connected");
+        LOG_ERROR("Cannot send - WebSocket not connected!");
         return;
     }
+    
+    LOG_TRACE("Sending WebSocket message: {}", 
+              message.length() > 200 ? message.substr(0, 200) + "..." : message);
     
     soup_websocket_connection_send_text(impl_->connection, message.c_str());
 }

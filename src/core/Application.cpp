@@ -806,25 +806,58 @@ void Application::onWebSocketDisconnected() {
 }
 
 void Application::onWebSocketMessage(const std::string& message) {
-    LOG_TRACE("WebSocket message received: {}", 
-            message.length() > 100 ? message.substr(0, 100) + "..." : message);
+    // 모든 메시지를 상세히 로깅
+    LOG_INFO("=== WebSocket Message Received ===");
     
-    // camstatus_reply를 받으면 등록이 성공한 것으로 간주
     try {
         auto j = nlohmann::json::parse(message);
-        if (j.contains("action")) {
-            std::string action = j["action"];
-            
-            // camstatus_reply를 받으면 확실히 등록된 것
-            if (action == "camstatus_reply") {
-                if (getState() != State::REGISTERED && getState() != State::RUNNING) {
-                    setState(State::REGISTERED);
-                    LOG_INFO("Confirmed registration via camstatus_reply");
+        std::string action = j.value("action", "unknown");
+        std::string peerType = j.value("peerType", "unknown");
+        
+        LOG_INFO("Action: {}, PeerType: {}", action, peerType);
+        
+        // 특정 액션에 대한 상세 로깅
+        if (action == "answer") {
+            LOG_INFO("✅ ANSWER received from server!");
+            if (j.contains("message")) {
+                auto& msg = j["message"];
+                std::string peerId = msg.value("peer_id", "unknown");
+                LOG_INFO("Answer for peer: {}", peerId);
+                
+                // SDP 내용 확인
+                if (msg.contains("sdp")) {
+                    auto& sdp = msg["sdp"];
+                    if (sdp.is_object()) {
+                        std::string sdpType = sdp.value("type", "");
+                        std::string sdpContent = sdp.value("sdp", "");
+                        LOG_INFO("SDP type: {}, length: {}", sdpType, sdpContent.length());
+                    }
                 }
             }
+        } else if (action == "candidate") {
+            LOG_INFO("✅ ICE candidate received from server");
+            if (j.contains("message")) {
+                auto& msg = j["message"];
+                std::string peerId = msg.value("peer_id", "unknown");
+                LOG_INFO("ICE candidate for peer: {}", peerId);
+            }
+        } else if (action == "error") {
+            LOG_ERROR("❌ Error message from server: {}", j.dump(2));
+        } else if (action == "ROOM_PEER_JOINED") {
+            LOG_INFO("Peer joined notification");
+        } else if (action == "ROOM_PEER_LEFT") {
+            LOG_INFO("Peer left notification");
+        } else if (action == "camstatus_reply") {
+            // 무시
+            return;
+        } else {
+            LOG_WARNING("Unknown action: {}", action);
+            LOG_DEBUG("Full message: {}", j.dump(2));
         }
+        
     } catch (const std::exception& e) {
-        LOG_TRACE("Message parsing failed: {}", e.what());
+        LOG_ERROR("Failed to parse WebSocket message: {}", e.what());
+        LOG_DEBUG("Raw message: {}", message);
     }
     
     // 메시지 핸들러로 전달

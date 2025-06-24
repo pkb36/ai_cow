@@ -49,6 +49,7 @@ struct WebRTCPeer::Impl {
     static void onConnectionState(GstElement* element, GParamSpec* pspec, gpointer userData);
     static void onOfferCreated(GstPromise* promise, gpointer userData);
     static void onAnswerCreated(GstPromise* promise, gpointer userData);
+    static void busMessage(GstBus* bus, GstMessage* message, gpointer userData);
 };
 
 WebRTCPeer::WebRTCPeer(const Config& config) 
@@ -66,63 +67,89 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
         return false;
     }
     
-    // 파이프라인 생성
+    // 방법 1: 파이프라인 문자열로 생성하는 대신 프로그래밍 방식으로 생성
     impl_->pipeline = gst_pipeline_new(nullptr);
     if (!impl_->pipeline) {
         LOG_ERROR("Failed to create pipeline");
         return false;
     }
     
-    // WebRTC bin 생성
+    // WebRTCBin 엘리먼트 직접 생성
     impl_->webrtcbin = gst_element_factory_make("webrtcbin", "webrtc");
     if (!impl_->webrtcbin) {
-        LOG_ERROR("Failed to create webrtcbin element");
+        LOG_ERROR("Failed to create webrtcbin element - check if gstreamer1.0-plugins-bad is installed");
         gst_object_unref(impl_->pipeline);
         impl_->pipeline = nullptr;
         return false;
     }
     
-    // 설정 - bundle-policy 추가
+    // WebRTCBin 설정
     g_object_set(impl_->webrtcbin,
                  "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE,
                  "stun-server", config_.stunServer.c_str(),
-                 "latency", 0,  // 레이턴시 0으로 설정
                  nullptr);
     
-    // RTP jitter buffer 추가
-    GstElement* rtpjitterbuffer = gst_element_factory_make("rtpjitterbuffer", nullptr);
-    if (!rtpjitterbuffer) {
-        LOG_ERROR("Failed to create rtpjitterbuffer");
+    if (config_.useTurn && !config_.turnServer.empty()) {
+        g_object_set(impl_->webrtcbin,
+                     "turn-server", config_.turnServer.c_str(),
+                     nullptr);
+    }
+    
+    // RTP 엘리먼트들 생성
+    GstElement* rtpDepay = gst_element_factory_make("rtph264depay", nullptr);
+    GstElement* h264parse = gst_element_factory_make("h264parse", nullptr);
+    GstElement* rtpPay = gst_element_factory_make("rtph264pay", nullptr);
+    
+    if (!rtpDepay || !h264parse || !rtpPay) {
+        LOG_ERROR("Failed to create RTP elements");
+        if (rtpDepay) gst_object_unref(rtpDepay);
+        if (h264parse) gst_object_unref(h264parse);
+        if (rtpPay) gst_object_unref(rtpPay);
         gst_object_unref(impl_->webrtcbin);
         gst_object_unref(impl_->pipeline);
-        impl_->pipeline = nullptr;
         impl_->webrtcbin = nullptr;
+        impl_->pipeline = nullptr;
         return false;
     }
     
-    // jitterbuffer 설정
-    g_object_set(rtpjitterbuffer,
-                 "latency", 200,  // 200ms
-                 "mode", 0,       // RTP_JITTER_BUFFER_MODE_NONE
-                 "do-lost", TRUE,
+    // RTP payloader 설정
+    g_object_set(rtpPay,
+                 "config-interval", 1,
+                 "pt", 96,
                  nullptr);
     
-    // 파이프라인에 추가
-    gst_bin_add_many(GST_BIN(impl_->pipeline), udpSrc, rtpjitterbuffer, impl_->webrtcbin, nullptr);
+    // 파이프라인에 엘리먼트 추가
+    gst_bin_add_many(GST_BIN(impl_->pipeline), 
+                     udpSrc, rtpDepay, h264parse, rtpPay, impl_->webrtcbin, 
+                     nullptr);
     
-    // 링크: udpsrc -> rtpjitterbuffer
-    if (!gst_element_link(udpSrc, rtpjitterbuffer)) {
-        LOG_ERROR("Failed to link udpsrc to rtpjitterbuffer");
+    // 엘리먼트 링크
+    if (!gst_element_link_many(udpSrc, rtpDepay, h264parse, rtpPay, nullptr)) {
+        LOG_ERROR("Failed to link elements before webrtcbin");
         gst_object_unref(impl_->pipeline);
         impl_->pipeline = nullptr;
         impl_->webrtcbin = nullptr;
         return false;
     }
     
-    // rtpjitterbuffer -> webrtcbin 연결
-    GstPad* srcPad = gst_element_get_static_pad(rtpjitterbuffer, "src");
-    GstPad* sinkPad = gst_element_get_request_pad(impl_->webrtcbin, "sink_%u");
+    // RTP payloader를 WebRTCBin에 연결
+    GstPad* srcPad = gst_element_get_static_pad(rtpPay, "src");
+    if (!srcPad) {
+        LOG_ERROR("Failed to get src pad from rtppay");
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
+        impl_->webrtcbin = nullptr;
+        return false;
+    }
     
+    // caps 설정
+    GstCaps* caps = gst_caps_from_string(
+        "application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000");
+    g_object_set(rtpPay, "caps", caps, nullptr);
+    gst_caps_unref(caps);
+    
+    // WebRTCBin sink pad 요청
+    GstPad* sinkPad = gst_element_get_request_pad(impl_->webrtcbin, "sink_%u");
     if (!sinkPad) {
         LOG_ERROR("Failed to get sink pad from webrtcbin");
         gst_object_unref(srcPad);
@@ -132,8 +159,10 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
         return false;
     }
     
-    if (gst_pad_link(srcPad, sinkPad) != GST_PAD_LINK_OK) {
-        LOG_ERROR("Failed to link to webrtcbin");
+    // 패드 연결
+    GstPadLinkReturn linkRet = gst_pad_link(srcPad, sinkPad);
+    if (linkRet != GST_PAD_LINK_OK) {
+        LOG_ERROR("Failed to link pads: {}", gst_pad_link_get_name(linkRet));
         gst_object_unref(srcPad);
         gst_object_unref(sinkPad);
         gst_object_unref(impl_->pipeline);
@@ -158,6 +187,14 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
     impl_->onConnectionStateId = g_signal_connect(impl_->webrtcbin, 
         "notify::connection-state", G_CALLBACK(Impl::onConnectionState), this);
     
+    // 버스 메시지 핸들러 추가
+    GstBus* bus = gst_element_get_bus(impl_->pipeline);
+    gst_bus_add_signal_watch(bus);
+    g_signal_connect(bus, "message", G_CALLBACK(Impl::busMessage), this);
+    gst_object_unref(bus);
+    
+    LOG_DEBUG("WebRTC pipeline created successfully");
+    
     // 파이프라인 시작
     GstStateChangeReturn ret = gst_element_set_state(impl_->pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -168,8 +205,29 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
         return false;
     }
     
+    // 상태 변경 대기
+    GstState state, pending;
+    ret = gst_element_get_state(impl_->pipeline, &state, &pending, GST_SECOND);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        LOG_ERROR("Pipeline state change failed");
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
+        impl_->webrtcbin = nullptr;
+        return false;
+    }
+    
+    LOG_INFO("WebRTC pipeline started successfully, current state: {}", 
+             gst_element_state_get_name(state));
+    
     setState(State::CONNECTING);
-    LOG_INFO("WebRTC pipeline created for peer: {}", config_.peerId);
+    
+    // negotiation-needed 시그널이 발생하지 않을 수 있으므로 수동으로 offer 생성
+    g_idle_add([](gpointer data) -> gboolean {
+        auto* peer = static_cast<WebRTCPeer*>(data);
+        peer->createOffer();
+        return G_SOURCE_REMOVE;
+    }, this);
+    
     return true;
 }
 
@@ -407,4 +465,41 @@ WebRTCPeer::Statistics WebRTCPeer::getStatistics() const {
     
     gst_promise_unref(promise);
     return stats;
+}
+
+void WebRTCPeer::Impl::busMessage(GstBus* bus, GstMessage* message, gpointer userData) {
+    auto* peer = static_cast<WebRTCPeer*>(userData);
+    
+    switch (GST_MESSAGE_TYPE(message)) {
+        case GST_MESSAGE_ERROR: {
+            GError* err;
+            gchar* debug;
+            gst_message_parse_error(message, &err, &debug);
+            LOG_ERROR("WebRTC pipeline error: {} ({})", err->message, debug);
+            g_error_free(err);
+            g_free(debug);
+            break;
+        }
+        case GST_MESSAGE_WARNING: {
+            GError* err;
+            gchar* debug;
+            gst_message_parse_warning(message, &err, &debug);
+            LOG_WARNING("WebRTC pipeline warning: {} ({})", err->message, debug);
+            g_error_free(err);
+            g_free(debug);
+            break;
+        }
+        case GST_MESSAGE_STATE_CHANGED: {
+            if (GST_MESSAGE_SRC(message) == GST_OBJECT(peer->impl_->pipeline)) {
+                GstState oldState, newState, pending;
+                gst_message_parse_state_changed(message, &oldState, &newState, &pending);
+                LOG_TRACE("WebRTC pipeline state: {} -> {}", 
+                         gst_element_state_get_name(oldState),
+                         gst_element_state_get_name(newState));
+            }
+            break;
+        }
+        default:
+            break;
+    }
 }

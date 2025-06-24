@@ -234,6 +234,10 @@ std::optional<int> Pipeline::addDynamicStream(const std::string& peerId,
 bool Pipeline::Impl::createDynamicSink(DynamicStreamInfo& info) {
     if (!pipeline) return false;
     
+    LOG_DEBUG("Creating dynamic sink for peer: {}, device: {}, type: {}, port: {}", 
+              info.peerId, static_cast<int>(info.device), 
+              static_cast<int>(info.type), info.port);
+    
     // Tee 엘리먼트 찾기
     std::string teeName = "stream_tee_";
     teeName += (info.type == StreamType::MAIN) ? "main_" : "sub_";
@@ -262,9 +266,10 @@ bool Pipeline::Impl::createDynamicSink(DynamicStreamInfo& info) {
     
     // Queue 설정
     g_object_set(info.queue,
-                 "max-size-buffers", 100,
+                 "max-size-buffers", 10,
                  "max-size-time", G_GUINT64_CONSTANT(0),
                  "max-size-bytes", 0,
+                 "leaky", 2,  // downstream
                  nullptr);
     
     // UDP sink 설정
@@ -301,7 +306,26 @@ bool Pipeline::Impl::createDynamicSink(DynamicStreamInfo& info) {
         return false;
     }
     
-    info.teepad = teeSrcPad;  // 이제 타입이 맞음
+    // 디버깅: UDP sink로 가는 데이터 확인
+    GstPad* sinkPad = gst_element_get_static_pad(info.udpsink, "sink");
+    if (sinkPad) {
+        gst_pad_add_probe(sinkPad, GST_PAD_PROBE_TYPE_BUFFER,
+            [](GstPad* pad, GstPadProbeInfo* info, gpointer userData) -> GstPadProbeReturn {
+                static int count = 0;
+                if (++count % 30 == 0) {  // 30 프레임마다
+                    auto* streamInfo = static_cast<DynamicStreamInfo*>(userData);
+                    GstBuffer* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+                    LOG_DEBUG("✅ UDP sink sending data to port {}: buffer size = {}", 
+                             streamInfo->port, gst_buffer_get_size(buffer));
+                }
+                return GST_PAD_PROBE_OK;
+            },
+            &info,
+            nullptr);
+        gst_object_unref(sinkPad);
+    }
+    
+    info.teepad = teeSrcPad;
     gst_object_unref(queueSinkPad);
     gst_object_unref(tee);
     
@@ -310,6 +334,9 @@ bool Pipeline::Impl::createDynamicSink(DynamicStreamInfo& info) {
     gst_element_sync_state_with_parent(info.udpsink);
     
     info.active = true;
+    
+    LOG_INFO("✅ Dynamic sink created successfully for peer {} on port {}", 
+             info.peerId, info.port);
     
     return true;
 }

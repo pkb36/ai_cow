@@ -20,6 +20,19 @@ MessageHandler::MessageHandler(std::shared_ptr<WebRTCManager> webrtcManager)
 }
 
 void MessageHandler::handleMessage(const std::string& message) {
+    // 원본 메시지 로깅 (디버깅용)
+    try {
+        auto j = nlohmann::json::parse(message);
+        std::string action = j.value("action", "unknown");
+        
+        // answer나 candidate 메시지는 전체 구조를 로깅
+        if (action == "answer" || action == "candidate") {
+            LOG_DEBUG("Raw {} message structure: {}", action, j.dump(2));
+        }
+    } catch (...) {
+        // JSON 파싱 실패 무시
+    }
+    
     auto parsedMsg = Signaling::MessageParser::parse(message);
     if (!parsedMsg) {
         LOG_WARNING("Failed to parse message: {}", message);
@@ -30,10 +43,16 @@ void MessageHandler::handleMessage(const std::string& message) {
     std::visit(Signaling::MessageVisitor{
         [this](const Signaling::PeerJoinedMessage& msg) { handlePeerJoined(msg); },
         [this](const Signaling::PeerLeftMessage& msg) { handlePeerLeft(msg); },
-        [this](const Signaling::AnswerMessage& msg) { handleAnswer(msg); },
-        [this](const Signaling::IceCandidateMessage& msg) { handleIceCandidate(msg); },
+        [this](const Signaling::AnswerMessage& msg) { 
+            LOG_INFO("Answer message received and parsed successfully for peer: {}", msg.peerId);
+            handleAnswer(msg); 
+        },
+        [this](const Signaling::IceCandidateMessage& msg) { 
+            LOG_DEBUG("ICE candidate received and parsed successfully for peer: {}", msg.peerId);
+            handleIceCandidate(msg); 
+        },
         [this](const Signaling::CommandMessage& msg) { handleCommand(msg); },
-        [](const auto&) {  // 매개변수 이름 제거
+        [](const auto&) {
             LOG_WARNING("Unhandled message type");
         }
     }, *parsedMsg);
@@ -86,11 +105,15 @@ void MessageHandler::handleOffer(const Signaling::OfferMessage& msg)
 
 void MessageHandler::sendRegistration(const std::string& cameraId) {
     Signaling::RegisterMessage msg;
-    msg.cameraId = cameraId;
+    msg.cameraId = "ai_cds";
     msg.firmwareVersion = "1.0.0";  // 실제 버전 정보로 대체
     msg.aiVersion = "0.1.0";
     
     auto jsonStr = Signaling::MessageParser::serialize(msg);
+
+    LOG_INFO("=== Sending Registration ===");
+    LOG_INFO("Camera ID: {}", msg.cameraId);
+    LOG_DEBUG("Registration message: {}", jsonStr);
     
     if (sendCallback_) {
         sendCallback_(jsonStr);
@@ -112,8 +135,16 @@ void MessageHandler::sendOffer(const std::string& peerId, const std::string& sdp
     
     auto jsonStr = Signaling::MessageParser::serialize(msg);
     
+    LOG_INFO("=== Sending Offer to Server ===");
+    LOG_INFO("Peer ID: {}", peerId);
+    LOG_INFO("SDP length: {}", sdp.length());
+    LOG_DEBUG("Full offer message: {}", jsonStr);
+    
     if (sendCallback_) {
         sendCallback_(jsonStr);
+        LOG_INFO("✅ Offer sent successfully");
+    } else {
+        LOG_ERROR("❌ No send callback available!");
     }
 }
 
@@ -126,6 +157,8 @@ void MessageHandler::sendIceCandidate(const std::string& peerId,
     msg.mlineIndex = mlineIndex;
     
     auto jsonStr = Signaling::MessageParser::serialize(msg);
+    
+    LOG_DEBUG("Sending ICE candidate {} for peer {}", mlineIndex, peerId);
     
     if (sendCallback_) {
         sendCallback_(jsonStr);
