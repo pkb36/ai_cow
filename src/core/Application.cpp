@@ -774,14 +774,23 @@ void Application::shutdown() {
 
 // WebSocket 이벤트 핸들러
 void Application::onWebSocketConnected() {
-   LOG_INFO("WebSocket connected - registering with server");
-   setState(State::CONNECTED);
-   reconnectAttempts_ = 0;
-   
-   // 서버에 등록
-   setState(State::REGISTERING);
-   const auto& config = Config::getInstance().getWebRTCConfig();
-   messageHandler_->sendRegistration(config.cameraId);
+    LOG_INFO("WebSocket connected - registering with server");
+    setState(State::CONNECTED);
+    reconnectAttempts_ = 0;
+    
+    // 서버에 등록
+    const auto& config = Config::getInstance().getWebRTCConfig();
+    messageHandler_->sendRegistration(config.cameraId);
+    
+    // 서버가 등록 응답을 보내지 않으므로 바로 REGISTERED 상태로
+    setState(State::REGISTERED);
+    LOG_INFO("Transitioned to REGISTERED state");
+    
+    // 첫 카메라 상태 전송 (약간의 지연 후)
+    std::thread([this]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        sendCameraStatus();
+    }).detach();
 }
 
 void Application::onWebSocketDisconnected() {
@@ -797,27 +806,31 @@ void Application::onWebSocketDisconnected() {
 }
 
 void Application::onWebSocketMessage(const std::string& message) {
-   LOG_TRACE("WebSocket message received: {}", 
+    LOG_TRACE("WebSocket message received: {}", 
             message.length() > 100 ? message.substr(0, 100) + "..." : message);
-   
-   // 메시지 핸들러로 전달
-   if (messageHandler_) {
-       messageHandler_->handleMessage(message);
-   }
-   
-   // 등록 완료 확인
-   if (getState() == State::REGISTERING) {
-       // 등록 성공 메시지 확인
-       try {
-           auto j = nlohmann::json::parse(message);
-           if (j.contains("action") && j["action"] == "registered") {
-               setState(State::REGISTERED);
-               LOG_INFO("Successfully registered with server");
-           }
-       } catch (const std::exception& e) {
-           LOG_TRACE("Message is not JSON or parsing failed: {}", e.what());
-       }
-   }
+    
+    // camstatus_reply를 받으면 등록이 성공한 것으로 간주
+    try {
+        auto j = nlohmann::json::parse(message);
+        if (j.contains("action")) {
+            std::string action = j["action"];
+            
+            // camstatus_reply를 받으면 확실히 등록된 것
+            if (action == "camstatus_reply") {
+                if (getState() != State::REGISTERED && getState() != State::RUNNING) {
+                    setState(State::REGISTERED);
+                    LOG_INFO("Confirmed registration via camstatus_reply");
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        LOG_TRACE("Message parsing failed: {}", e.what());
+    }
+    
+    // 메시지 핸들러로 전달
+    if (messageHandler_) {
+        messageHandler_->handleMessage(message);
+    }
 }
 
 // 주기적 작업
@@ -835,6 +848,8 @@ void Application::heartbeatThread() {
                checkAndReconnect();
            } else {
                // 카메라 상태 전송
+               LOG_DEBUG("State : {}, WebSocket connected: {}",
+                         getState(), wsClient_->isConnected());
                if (getState() == State::REGISTERED || getState() == State::RUNNING) {
                    sendCameraStatus();
                }
@@ -861,6 +876,9 @@ void Application::sendCameraStatus() {
        const auto& config = Config::getInstance().getWebRTCConfig();
        const auto& deviceSettings = Config::getInstance().getDeviceSettings();
        auto sysStatus = SystemMonitor::getInstance().getCurrentStatus();
+
+       LOG_DEBUG("WebSocket connected, active peers: {}", 
+              webrtcManager_ ? webrtcManager_->getPeerCount() : 0);
        
        // 스냅샷 이미지를 Base64로 인코딩
        std::string rgbSnapshot = encodeImageToBase64(

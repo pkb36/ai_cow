@@ -67,61 +67,78 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
     }
     
     // 파이프라인 생성
-    std::string pipelineStr = "webrtcbin name=webrtc bundle-policy=max-bundle "
-                             "stun-server=" + config_.stunServer + " ";
-    
-    if (config_.useTurn && !config_.turnServer.empty()) {
-        pipelineStr += "turn-server=" + config_.turnServer + " ";
-    }
-    
-    GError* error = nullptr;
-    impl_->pipeline = gst_parse_launch(pipelineStr.c_str(), &error);
-    
-    if (error) {
-        LOG_ERROR("Failed to create WebRTC pipeline: {}", error->message);
-        g_error_free(error);
+    impl_->pipeline = gst_pipeline_new(nullptr);
+    if (!impl_->pipeline) {
+        LOG_ERROR("Failed to create pipeline");
         return false;
     }
     
-    // WebRTC bin 가져오기
-    impl_->webrtcbin = gst_bin_get_by_name(GST_BIN(impl_->pipeline), "webrtc");
+    // WebRTC bin 생성
+    impl_->webrtcbin = gst_element_factory_make("webrtcbin", "webrtc");
     if (!impl_->webrtcbin) {
-        LOG_ERROR("Failed to get webrtcbin element");
+        LOG_ERROR("Failed to create webrtcbin element");
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
         return false;
     }
     
-    // RTP 캡슐화 추가
-    GstElement* rtpPay = nullptr;
-    if (config_.peerId.find("H264") != std::string::npos) {
-        rtpPay = gst_element_factory_make("rtph264pay", nullptr);
-    } else if (config_.peerId.find("VP8") != std::string::npos) {
-        rtpPay = gst_element_factory_make("rtpvp8pay", nullptr);
-    } else {
-        rtpPay = gst_element_factory_make("rtph264pay", nullptr); // 기본값
-    }
+    // 설정 - bundle-policy 추가
+    g_object_set(impl_->webrtcbin,
+                 "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE,
+                 "stun-server", config_.stunServer.c_str(),
+                 "latency", 0,  // 레이턴시 0으로 설정
+                 nullptr);
     
-    if (!rtpPay) {
-        LOG_ERROR("Failed to create RTP payloader");
+    // RTP jitter buffer 추가
+    GstElement* rtpjitterbuffer = gst_element_factory_make("rtpjitterbuffer", nullptr);
+    if (!rtpjitterbuffer) {
+        LOG_ERROR("Failed to create rtpjitterbuffer");
+        gst_object_unref(impl_->webrtcbin);
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
+        impl_->webrtcbin = nullptr;
         return false;
     }
     
-    gst_bin_add_many(GST_BIN(impl_->pipeline), udpSrc, rtpPay, nullptr);
+    // jitterbuffer 설정
+    g_object_set(rtpjitterbuffer,
+                 "latency", 200,  // 200ms
+                 "mode", 0,       // RTP_JITTER_BUFFER_MODE_NONE
+                 "do-lost", TRUE,
+                 nullptr);
     
-    // 링크
-    if (!gst_element_link(udpSrc, rtpPay)) {
-        LOG_ERROR("Failed to link udpsrc to rtppay");
+    // 파이프라인에 추가
+    gst_bin_add_many(GST_BIN(impl_->pipeline), udpSrc, rtpjitterbuffer, impl_->webrtcbin, nullptr);
+    
+    // 링크: udpsrc -> rtpjitterbuffer
+    if (!gst_element_link(udpSrc, rtpjitterbuffer)) {
+        LOG_ERROR("Failed to link udpsrc to rtpjitterbuffer");
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
+        impl_->webrtcbin = nullptr;
         return false;
     }
     
-    // WebRTC에 연결 (호환성을 위한 수정)
-    GstPad* srcPad = gst_element_get_static_pad(rtpPay, "src");
-    GstPadTemplate* template_ = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(impl_->webrtcbin), "sink_%u");
-    GstPad* sinkPad = gst_element_request_pad(impl_->webrtcbin, template_, nullptr, nullptr);
+    // rtpjitterbuffer -> webrtcbin 연결
+    GstPad* srcPad = gst_element_get_static_pad(rtpjitterbuffer, "src");
+    GstPad* sinkPad = gst_element_get_request_pad(impl_->webrtcbin, "sink_%u");
+    
+    if (!sinkPad) {
+        LOG_ERROR("Failed to get sink pad from webrtcbin");
+        gst_object_unref(srcPad);
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
+        impl_->webrtcbin = nullptr;
+        return false;
+    }
     
     if (gst_pad_link(srcPad, sinkPad) != GST_PAD_LINK_OK) {
-        LOG_ERROR("Failed to link RTP to WebRTC");
+        LOG_ERROR("Failed to link to webrtcbin");
         gst_object_unref(srcPad);
         gst_object_unref(sinkPad);
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
+        impl_->webrtcbin = nullptr;
         return false;
     }
     
@@ -145,10 +162,14 @@ bool WebRTCPeer::connectToStream(GstElement* udpSrc) {
     GstStateChangeReturn ret = gst_element_set_state(impl_->pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
         LOG_ERROR("Failed to start WebRTC pipeline");
+        gst_object_unref(impl_->pipeline);
+        impl_->pipeline = nullptr;
+        impl_->webrtcbin = nullptr;
         return false;
     }
     
     setState(State::CONNECTING);
+    LOG_INFO("WebRTC pipeline created for peer: {}", config_.peerId);
     return true;
 }
 
@@ -259,7 +280,7 @@ void WebRTCPeer::Impl::onNegotiationNeeded(GstElement* element, gpointer userDat
     auto* peer = static_cast<WebRTCPeer*>(userData);
     LOG_DEBUG("Negotiation needed for peer: {}", peer->config_.peerId);
     
-    // Offer 생성은 외부에서 명시적으로 호출
+    peer->createOffer();
 }
 
 void WebRTCPeer::Impl::onIceCandidate(GstElement* element, guint mlineIndex, 
@@ -274,7 +295,24 @@ void WebRTCPeer::Impl::onIceCandidate(GstElement* element, guint mlineIndex,
 
 void WebRTCPeer::Impl::onIceGatheringState(GstElement* element, GParamSpec* pspec, gpointer userData) {
     (void)element; (void)pspec; (void)userData; // 미사용 매개변수 경고 제거
-    // ICE 수집 상태 변경 처리 (필요시 구현)
+    GstWebRTCICEGatheringState ice_gather_state;
+    const gchar *new_state = "unknown";
+    
+    g_object_get (element, "ice-gathering-state", &ice_gather_state, NULL);
+    switch (ice_gather_state) {
+        case GST_WEBRTC_ICE_GATHERING_STATE_NEW:
+        new_state = "new";
+        break;
+        case GST_WEBRTC_ICE_GATHERING_STATE_GATHERING:
+        new_state = "gathering";
+        break;
+        case GST_WEBRTC_ICE_GATHERING_STATE_COMPLETE:
+        new_state = "complete";
+        // ICE complete 후 DTLS 준비 시간
+        g_usleep(100000);  // 100ms 대기
+        break;
+    }
+    LOG_DEBUG("ICE gathering state changed: {}", new_state);
 }
 
 void WebRTCPeer::Impl::onConnectionState(GstElement* element, GParamSpec* pspec, gpointer userData) {

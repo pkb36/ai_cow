@@ -38,7 +38,7 @@ struct Pipeline::Impl {
     
     // 헬퍼 함수들
     std::string buildPipelineString();
-    void initializeStreams();
+    int get_udp_port(ProcessType process, CameraDevice device, StreamType stream, int index);
     bool setupOsdProbes();
     bool registerElements();
     int allocatePort();
@@ -50,36 +50,6 @@ struct Pipeline::Impl {
     static GstPadProbeReturn universalProbeCallback(GstPad* pad, GstPadProbeInfo* info, gpointer userData);
     static gboolean busCallback(GstBus* bus, GstMessage* message, gpointer userData);
 };
-
-int get_udp_port(ProcessType process, CameraDevice device, StreamType stream, int index) {
-    // config에서 가져온 값들 (예시)
-    const int stream_base_port = 5000;  // config.streamBasePort
-    const int max_stream_cnt = 10;      // config.maxStreamCount
-    
-    int port = stream_base_port;
-    
-    switch (process) {
-        case SENDER:
-            port += index;
-            break;
-        case RECORDER:
-            port += max_stream_cnt;
-            break;
-        case EVENT_RECORDER:
-            port += max_stream_cnt + 1;
-            break;
-    }
-    
-    // 디바이스별 오프셋
-    port += static_cast<int>(device);
-    
-    // 스트림 타입별 오프셋 (SECOND_STREAM은 +100)
-    if (stream == StreamType::SECONDARY) {
-        port += 100;
-    }
-    
-    return port;
-}
 
 Pipeline::Pipeline() : impl_(std::make_unique<Impl>()) {
     LOG_TRACE("Pipeline created");
@@ -122,11 +92,18 @@ bool Pipeline::create(const PipelineConfig& config) {
         return false;
     }
     
-    // 사용 가능한 포트 범위 초기화
-    for (int port = config.basePort; port < config.basePort + 1000; port += 2) {
-        // 녹화용 포트는 제외 (7000, 7001)
-        if (port >= 7000 && port <= 7001) continue;
-        impl_->usedPorts.insert(port);
+    // usedPorts 초기화 - 비어있는 상태로 시작!
+    impl_->usedPorts.clear();
+    
+    // 예약된 포트만 사용 중으로 표시
+    // 녹화용 포트
+    impl_->usedPorts.insert(7000);
+    impl_->usedPorts.insert(7001);
+    
+    // 정적 스트림 포트 (필요한 경우)
+    for (int i = 0; i < config.cameras; ++i) {
+        impl_->usedPorts.insert(config.basePort + i * 2);      // 메인 스트림
+        impl_->usedPorts.insert(config.basePort + i * 2 + 1);  // 서브 스트림
     }
     
     // OSD 프로브 설정
@@ -139,39 +116,34 @@ bool Pipeline::create(const PipelineConfig& config) {
     return true;
 }
 
-void Pipeline::Impl::initializeStreams() {
-    std::lock_guard<std::mutex> lock(streamMutex);
+int Pipeline::Impl::get_udp_port(ProcessType process, CameraDevice device, StreamType stream, int index) {
+    const int stream_base_port = config.basePort;  // 5000
+    const int max_stream_cnt = config.maxStreamCount;  // 10
     
-    streams.clear();
-    streams.reserve(config.maxStreamCount * config.cameras.size() * 2);
+    int port = stream_base_port;
     
-    // 모든 가능한 스트림 슬롯 초기화
-    for (size_t streamIdx = 0; streamIdx < config.maxStreamCount; ++streamIdx) {
-        for (size_t camIdx = 0; camIdx < config.cameras.size(); ++camIdx) {
-            for (int streamType = 0; streamType < 2; ++streamType) {
-                StreamInfo info;
-                info.device = static_cast<CameraDevice>(camIdx);
-                info.type = static_cast<StreamType>(streamType);
-                
-                // gstream_main.c와 동일한 포트 계산 로직 사용
-                info.port = get_udp_port(SENDER, info.device, info.type, streamIdx);
-                
-                info.active = false;
-                info.udpsink = nullptr;
-                
-                // UDP sink element 이름 생성
-                std::string sinkName = "udpsink_" + std::to_string(camIdx) + "_" + 
-                                     std::to_string(streamType) + "_" + std::to_string(streamIdx);
-                
-                streams.push_back(info);
-                
-                LOG_TRACE("Initialized stream slot {} for device {} type {} on port {}", 
-                         streamIdx, camIdx, streamType, info.port);
-            }
-        }
+    // 프로세스별 오프셋
+    switch (process) {
+        case SENDER:
+            port += index * 2;  // 각 스트림당 2개 포트 사용 (main/sub)
+            break;
+        case RECORDER:
+            port = 7000;  // 녹화용 고정 포트
+            break;
+        case EVENT_RECORDER:
+            port = 7100;  // 이벤트 녹화용 고정 포트
+            break;
     }
     
-    LOG_INFO("Initialized {} stream slots", streams.size());
+    // 디바이스별 오프셋
+    port += static_cast<int>(device);
+    
+    // 스트림 타입별 오프셋
+    if (stream == StreamType::SECONDARY) {
+        port += 100;
+    }
+    
+    return port;
 }
 
 std::string Pipeline::Impl::buildPipelineString() {
@@ -182,31 +154,33 @@ std::string Pipeline::Impl::buildPipelineString() {
     for (int i = 0; i < webrtcConfig.deviceCnt && i < 2; ++i) {
         const auto& video = webrtcConfig.video[i];
         
-        // 1. 비디오 소스와 녹화 브랜치
+        // 1. 비디오 소스
         ss << video.src << " ";
+        
+        // 2. 녹화 브랜치
         ss << video.record << " ";
         
-        // 2. 추론 브랜치가 있는 경우
+        // 3. 추론 브랜치가 있는 경우
         if (!video.infer.empty()) {
             ss << video.infer << " ";
-            
-            // 추론 후 메인 인코더를 위한 tee
-            ss << "tee name=infer_tee_" << i << " ";
-            ss << "infer_tee_" << i << ". ! queue ! ";
         }
         
-        // 3. 메인 인코더
-        ss << video.enc;
+        // 4. 메인 인코더 (space 추가 중요!)
+        ss << video.enc << " ";  
+        
+        // 동적 스트림을 위한 tee 추가
         ss << "tee name=stream_tee_main_" << i << " allow-not-linked=true ";
-        ss << "stream_tee_main_" << i << ". ! fakesink ";
+        ss << "stream_tee_main_" << i << ". ! queue ! fakesink ";
         
-        // 4. 서브 인코더  
-        ss << video.enc2;
+        // 5. 서브 인코더
+        ss << video.enc2 << " ";
+        
+        // 동적 스트림을 위한 tee 추가
         ss << "tee name=stream_tee_sub_" << i << " allow-not-linked=true ";
-        ss << "stream_tee_sub_" << i << ". ! fakesink ";
+        ss << "stream_tee_sub_" << i << ". ! queue ! fakesink ";
         
-        // 5. 스냅샷 브랜치
-        ss << video.snapshot;
+        // 6. 스냅샷 브랜치
+        ss << video.snapshot << " ";
         ss << "location=" << webrtcConfig.snapshotPath << "/cam" << i << "_snapshot.jpg ";
     }
     
@@ -420,21 +394,34 @@ bool Pipeline::Impl::removeDynamicSink(const std::string& peerId) {
 
 // 포트 할당
 int Pipeline::Impl::allocatePort() {
-    // 사용 가능한 포트 찾기
-    for (int port = config.basePort; port < config.basePort + 1000; port += 2) {
-        if (port >= 7000 && port <= 7001) continue; // 녹화용 포트 제외
+    // 동적 스트림용 포트 범위: 5100-5999
+    const int dynamicPortStart = config.basePort + 100;
+    const int dynamicPortEnd = config.basePort + 1000;
+    
+    for (int port = dynamicPortStart; port < dynamicPortEnd; port += 2) {
+        // 예약된 포트 제외
+        if (port >= 7000 && port <= 7199) continue;  // 녹화용
         
-        if (usedPorts.find(port) != usedPorts.end()) {
-            usedPorts.erase(port);
+        // 사용되지 않은 포트 찾기
+        if (usedPorts.find(port) == usedPorts.end()) {
+            usedPorts.insert(port);  // 사용 중으로 표시
+            LOG_DEBUG("Allocated port: {}", port);
             return port;
         }
     }
+    
+    LOG_ERROR("No available ports in range {}-{}", dynamicPortStart, dynamicPortEnd);
+    LOG_ERROR("Currently used ports: {}", usedPorts.size());
     return -1;
 }
 
 // 포트 해제
 void Pipeline::Impl::releasePort(int port) {
-    usedPorts.insert(port);
+    if (usedPorts.erase(port) > 0) {
+        LOG_DEBUG("Released port: {}", port);
+    } else {
+        LOG_WARNING("Attempted to release unused port: {}", port);
+    }
 }
 
 // 스트림 정보 조회
@@ -841,48 +828,4 @@ gboolean Pipeline::Impl::busCallback(GstBus*, GstMessage* message, gpointer user
     }
     
     return TRUE;
-}
-
-std::optional<Pipeline::StreamInfo> Pipeline::getStreamInfo(const std::string& peerId) const {
-    std::lock_guard<std::mutex> lock(impl_->streamMutex);
-    
-    auto it = std::find_if(impl_->streams.begin(), impl_->streams.end(),
-        [&](const auto& stream) {
-            return stream.peerId == peerId && stream.active;
-        });
-    
-    if (it != impl_->streams.end()) {
-        return *it;
-    }
-    
-    return std::nullopt;
-}
-
-std::optional<Pipeline::StreamInfo> Pipeline::getStreamInfo(CameraDevice device, StreamType type) const {
-    std::lock_guard<std::mutex> lock(impl_->streamMutex);
-    
-    // 활성화된 스트림 중에서 찾기
-    auto it = std::find_if(impl_->streams.begin(), impl_->streams.end(),
-        [&](const auto& stream) {
-            return stream.device == device && 
-                   stream.type == type && 
-                   stream.active;
-        });
-    
-    if (it != impl_->streams.end()) {
-        return *it;
-    }
-    
-    // 활성화되지 않은 스트림 중에서 찾기 (포트 정보만 필요한 경우)
-    it = std::find_if(impl_->streams.begin(), impl_->streams.end(),
-        [&](const auto& stream) {
-            return stream.device == device && 
-                   stream.type == type;
-        });
-    
-    if (it != impl_->streams.end()) {
-        return *it;
-    }
-    
-    return std::nullopt;
 }

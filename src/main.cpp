@@ -103,7 +103,7 @@ int main(int argc, char* argv[]) {
         
         // 로거 초기화
         Logger::getInstance().setLogFile("webrtc_camera.log");
-        Logger::getInstance().setLogLevel(LogLevel::DEBUG_LEVEL);
+        Logger::getInstance().setLogLevel(LogLevel::TRACE);
         
         LOG_INFO("========================================");
         LOG_INFO("WebRTC Camera System Starting...");

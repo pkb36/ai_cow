@@ -45,7 +45,7 @@ public:
         std::string eventServerIp = "52.194.238.184";
         
         // 기타 설정
-        int statusTimerInterval = 5000;
+        int statusTimerInterval = 1000;
         std::string httpServicePort = "9617";
         
         // TTY 설정

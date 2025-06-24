@@ -13,6 +13,11 @@ std::optional<Message> MessageParser::parse(const std::string& jsonStr) {
         }
         
         std::string action = j["action"];
+
+        if (action == "camstatus_reply") {
+            LOG_DEBUG("Ignoring camstatus_reply");
+            return std::nullopt;
+        }
         
         if (action == "ROOM_PEER_JOINED") {
             return parsePeerJoined(j);
@@ -61,14 +66,19 @@ std::string MessageParser::serialize(const Message& message) {
             };
         },
         [&j](const OfferMessage& msg) {
+            // 기존 코드와 동일한 형식
             j["peerType"] = "camera";
             j["action"] = "offer";
             j["message"] = {
                 {"peer_id", msg.peerId},
-                {"sdp", msg.sdp}
+                {"sdp", {
+                    {"type", "offer"},
+                    {"sdp", msg.sdp}
+                }}
             };
         },
         [&j](const IceCandidateMessage& msg) {
+            // 기존 코드와 동일한 형식
             j["peerType"] = "camera";
             j["action"] = "candidate";
             j["message"] = {
@@ -164,22 +174,29 @@ std::optional<PeerLeftMessage> MessageParser::parsePeerLeft(const nlohmann::json
     }
 }
 
-std::optional<AnswerMessage> MessageParser::parseAnswer(const nlohmann::json& j)
-{
+std::optional<AnswerMessage> MessageParser::parseAnswer(const nlohmann::json& j) {
     try {
         if (!j.contains("message")) return std::nullopt;
-
+        
         auto& msg = j["message"];
         AnswerMessage result;
-
+        
         result.peerId = msg.value("peer_id", "");
-        result.sdp = msg.value("sdp", "");
-
+        
+        // sdp가 객체 형태로 중첩되어 있음
+        if (msg.contains("sdp") && msg["sdp"].is_object()) {
+            auto& sdpObj = msg["sdp"];
+            result.sdp = sdpObj.value("sdp", "");
+        } else {
+            LOG_ERROR("Invalid SDP format in answer");
+            return std::nullopt;
+        }
+        
         if (result.peerId.empty() || result.sdp.empty()) {
             LOG_ERROR("Missing peer_id or sdp in answer message");
             return std::nullopt;
         }
-
+        
         return result;
     } catch (const std::exception& e) {
         LOG_ERROR("Error parsing Answer message: {}", e.what());
@@ -187,29 +204,30 @@ std::optional<AnswerMessage> MessageParser::parseAnswer(const nlohmann::json& j)
     }
 }
 
-std::optional<IceCandidateMessage> MessageParser::parseIceCandidate(const nlohmann::json& j)
-{
+std::optional<IceCandidateMessage> MessageParser::parseIceCandidate(const nlohmann::json& j) {
     try {
         if (!j.contains("message")) return std::nullopt;
-
+        
         auto& msg = j["message"];
         IceCandidateMessage result;
-
+        
         result.peerId = msg.value("peer_id", "");
-        if (msg.contains("ice")) {
+        
+        // ice가 객체 형태로 중첩되어 있음
+        if (msg.contains("ice") && msg["ice"].is_object()) {
             auto& ice = msg["ice"];
             result.candidate = ice.value("candidate", "");
             result.mlineIndex = ice.value("sdpMLineIndex", -1);
         } else {
-            LOG_ERROR("Missing 'ice' field in candidate message");
+            LOG_ERROR("Invalid ICE format in candidate message");
             return std::nullopt;
         }
-
+        
         if (result.peerId.empty() || result.candidate.empty() || result.mlineIndex < 0) {
             LOG_ERROR("Invalid ICE candidate message");
             return std::nullopt;
         }
-
+        
         return result;
     } catch (const std::exception& e) {
         LOG_ERROR("Error parsing IceCandidate message: {}", e.what());
